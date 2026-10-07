@@ -61,6 +61,10 @@ it('digital pixel readback and automatic brightness limiter regressions', t => {
   let fixture = fs.readFileSync(path.join(__dirname, '../test/abl/fixture.h'), 'utf8');
   const capabilities = ['static constexpr bool hasRGB(', 'static constexpr bool hasWhite(', 'static constexpr bool hasCCT(', 'static constexpr bool  isDigital(', 'static constexpr bool  is2Pin(']
     .map(signature => extractFunction(header, signature)).join('\n');
+  fixture = fixture.replace('/* COLOR_STATE */', [
+    'static inline int16_t  getCCT()', 'static inline void     setCCT(',
+    'static inline uint16_t getWhiteBalance()', 'static inline void     setWhiteBalance('
+  ].map(signature => extractFunction(header, signature)).join('\n'));
   fixture = fixture.replace('/* CONSTANTS */', `${defines}\n#define MA_FOR_ESP ${ma[1]}`)
     .replace('/* DRIVER_ALIASES */', aliases)
     .replace('/* CAPABILITIES */', capabilities)
@@ -89,7 +93,7 @@ it('digital pixel readback and automatic brightness limiter regressions', t => {
   source += extractFunction(colors, 'uint32_t IRAM_ATTR color_fade(') + '\n';
   for (const signature of ['void Bus::calculateCCT(', 'uint32_t Bus::autoWhiteCalc(',
     'void BusDigital::estimateCurrent(', 'void BusDigital::applyBriLimit(',
-    'void IRAM_ATTR BusDigital::setPixelColor(', 'void BusPwm::setPixelColor(', 'void BusNetwork::setPixelColor(', 'void BusManager::initializeABL(', 'void BusManager::applyABL(']) {
+    'void BusManager::setSegmentCCT(', 'void IRAM_ATTR BusManager::setPixelColor(', 'void IRAM_ATTR BusDigital::setPixelColor(', 'void BusPwm::setPixelColor(', 'void BusNetwork::setPixelColor(', 'void BusManager::initializeABL(', 'void BusManager::applyABL(']) {
     source += extractFunction(bus, signature) + '\n';
   }
   source += extractFunction(fx, 'bool WS2812FX::hasRGBWBus(') + '\n';
@@ -120,6 +124,10 @@ it('digital pixel readback and automatic brightness limiter regressions', t => {
   if (member[0].startsWith('static ')) {
     source += `${currentType} BusDigital::_milliAmpsTotal = 0;\n`;
   }
+  const paintStart = fx.indexOf('  int oldCCT =', fx.indexOf('void WS2812FX::show('));
+  const paintEnd = fx.indexOf('  BusManager::show();', paintStart);
+  assert.ok(paintStart >= 0 && paintEnd > paintStart);
+  source += 'void WS2812FX::paintFrame() { size_t totalLen=getLengthTotal();\n' + fx.slice(paintStart, paintEnd) + '}\n';
   source += fs.readFileSync(path.join(__dirname, '../test/abl/cases.cpp'), 'utf8');
 
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'wled-abl-'));

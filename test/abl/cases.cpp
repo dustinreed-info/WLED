@@ -7,7 +7,7 @@ static void resetState() {
   strip.length=8; errorFlag=0; cctAllocations=0; cctFrees=0; failCCTAllocation=false;
   strip._length=8; strip._segments.clear();
   strip._hasWhiteChannel=false; strip._isOffRefreshRequired=false;
-  Bus::_cct=-1; Bus::_cctBlend=0; Bus::_gAWM=255;
+  Bus::_cct=-1; Bus::_whiteBalance=0; Bus::_cctBlend=0; Bus::_gAWM=255;
   BusManager::busses.clear(); BusManager::_useABL=true;
   BusManager::_gMilliAmpsMax=0; BusManager::_gMilliAmpsUsed=0;
   PolyBus::resetChannelTracking();
@@ -310,7 +310,7 @@ int main() {
     realtimeMode=REALTIME_MODE_DDP;
     CHECK(strip.updateCCTBuffer() && strip._pixelCCT[7]==64);
     strip.cctFromRgb=true;
-    CHECK(strip.updateCCTBuffer() && !strip._pixelCCT);
+    CHECK(strip.updateCCTBuffer() && strip._pixelCCT[7]==64);
   }});
   checks.push_back({"full-strip realtime tolerates an absent segment list", [] {
     BusManager::busses.push_back(std::make_unique<BusDigital>(8));
@@ -401,6 +401,106 @@ int main() {
         if (mode==RGBW_MODE_AUTO_ACCURATE) CHECK(p.R==0 && p.G==0 && p.B==0);
       }
     }
+  }});
+  checks.push_back({"RGB white balance remains active with RGB-derived CCT", [] {
+    auto bus=std::make_unique<BusDigital>(1); auto* out=bus.get();
+    BusManager::busses.push_back(std::move(bus));
+    strip.correctWB=true; strip.cctFromRgb=true; strip._segments.resize(1);
+    strip._segments[0].cct=0; strip._pixels[0]=RGBW32(100,100,100,200);
+    CHECK(strip.updateCCTBuffer()); strip.blendPixelCCT(0,strip._pixels[0],255,0,0); strip.paintFrame(); auto warm=out->raw->pixels[0];
+    strip._segments[0].cct=255;
+    CHECK(strip.updateCCTBuffer()); strip.blendPixelCCT(0,strip._pixels[0],255,0,255); strip.paintFrame(); auto cool=out->raw->pixels[0];
+    CHECK(warm.R!=cool.R || warm.G!=cool.G || warm.B!=cool.B);
+    CHECK(warm.WW==cool.WW && warm.CW==cool.CW);
+  }});
+  checks.push_back({"RGB-only white balance remains active with the CCT-from-RGB flag", [] {
+    auto bus=std::make_unique<BusDigital>(1,0,TYPE_SK6812_RGBW); auto* out=bus.get();
+    BusManager::busses.push_back(std::move(bus));
+    strip.correctWB=true; strip.cctFromRgb=true; strip._segments.resize(1);
+    strip._segments[0].cct=0; strip._pixels[0]=RGBW32(100,100,100,200);
+    CHECK(strip.updateCCTBuffer()); strip.blendPixelCCT(0,strip._pixels[0],255,0,0); strip.paintFrame(); auto warm=out->raw->pixels[0];
+    strip._segments[0].cct=255;
+    CHECK(strip.updateCCTBuffer()); strip.blendPixelCCT(0,strip._pixels[0],255,0,255); strip.paintFrame(); auto cool=out->raw->pixels[0];
+    CHECK(warm.R!=cool.R || warm.G!=cool.G || warm.B!=cool.B);
+    CHECK(warm.W==200 && cool.W==200);
+  }});
+  checks.push_back({"CCT and RGB correction cover all render and streaming flag combinations", [] {
+    for (uint8_t type : {TYPE_WS2805,TYPE_SK6812_RGBW}) {
+      for (bool derive : {false,true}) for (bool wb : {false,true}) {
+        for (bool streaming : {false,true}) for (bool mainOnly : {false,true}) {
+          strip.releaseCCT(); BusManager::busses.clear(); Bus::setCCT(-1);
+          auto bus=std::make_unique<BusDigital>(1,0,type); auto* out=bus.get();
+          BusManager::busses.push_back(std::move(bus));
+          strip.correctWB=wb; strip.cctFromRgb=derive; strip._segments.resize(1);
+          realtimeMode=streaming ? REALTIME_MODE_DDP : REALTIME_MODE_INACTIVE; useMainSegmentOnly=mainOnly;
+          strip._pixels[0]=RGBW32(100,100,100,200);
+          strip._segments[0].cct=0;
+          CHECK(strip.updateCCTBuffer());
+          CHECK(bool(strip._pixelCCT)==(wb || (out->hasCCT() && !derive)));
+          if (!streaming || mainOnly) strip.blendPixelCCT(0,strip._pixels[0],255,0,0);
+          strip.paintFrame(); auto warm=out->raw->pixels[0];
+          strip._segments[0].cct=255;
+          CHECK(strip.updateCCTBuffer());
+          if (!streaming || mainOnly) strip.blendPixelCCT(0,strip._pixels[0],255,0,255);
+          strip.paintFrame(); auto cool=out->raw->pixels[0];
+          bool rgbChanged=warm.R!=cool.R || warm.G!=cool.G || warm.B!=cool.B;
+          CHECK(rgbChanged==wb);
+          if (out->hasCCT()) {
+            if (derive) CHECK(warm.WW==cool.WW && warm.CW==cool.CW);
+            else CHECK(warm.WW==200 && warm.CW==0 && cool.WW==0 && cool.CW==200);
+          } else CHECK(warm.W==200 && cool.W==200);
+        }
+      }
+    }
+  }});
+  checks.push_back({"legacy Kelvin CCT state still enables RGB correction and resets independent tint", [] {
+    Bus::setWhiteBalance(2700); Bus::setCCT(1900);
+    CHECK(Bus::getCCT()==1900 && Bus::getWhiteBalance()==1900);
+    BusManager::setSegmentCCT(255,true);
+    CHECK(Bus::getCCT()==10060 && Bus::getWhiteBalance()==10060);
+    BusManager::setSegmentCCT(64,false);
+    CHECK(Bus::getCCT()==64 && Bus::getWhiteBalance()==0);
+    Bus::setWhiteBalance(2700); Bus::setCCT(-1);
+    CHECK(Bus::getWhiteBalance()==0);
+  }});
+  checks.push_back({"derived CCT keeps RGB tint independent and clears it when disabled", [] {
+    BusManager::setSegmentCCT(0,true,true);
+    CHECK(Bus::getCCT()==-1 && Bus::getWhiteBalance()==1900);
+    BusManager::setSegmentCCT(255,true,true);
+    CHECK(Bus::getCCT()==-1 && Bus::getWhiteBalance()==10060);
+    BusManager::setSegmentCCT(255,false,true);
+    CHECK(Bus::getCCT()==-1 && Bus::getWhiteBalance()==0);
+  }});
+  checks.push_back({"paint restores physical CCT and independent RGB correction state", [] {
+    BusManager::busses.push_back(std::make_unique<BusDigital>(1));
+    strip.correctWB=true; strip.cctFromRgb=true; strip._segments.resize(1);
+    strip._pixels[0]=RGBW32(100,100,100,200);
+    CHECK(strip.updateCCTBuffer()); strip.blendPixelCCT(0,strip._pixels[0],255,0,0);
+    Bus::setCCT(64); Bus::setWhiteBalance(2700); strip.paintFrame();
+    CHECK(Bus::getCCT()==64 && Bus::getWhiteBalance()==2700);
+  }});
+  checks.push_back({"derived CCT metadata is allocated only while RGB correction needs it", [] {
+    BusManager::busses.push_back(std::make_unique<BusDigital>(8));
+    strip.cctFromRgb=true; strip.correctWB=true;
+    for (unsigned frame=0;frame<100;frame++) CHECK(strip.updateCCTBuffer() && strip._pixelCCT);
+    CHECK(cctAllocations==1 && cctFrees==0);
+    strip.correctWB=false; CHECK(strip.updateCCTBuffer() && !strip._pixelCCT);
+    CHECK(cctFrees==1);
+    strip.correctWB=true; failCCTAllocation=true;
+    CHECK(!strip.updateCCTBuffer() && !strip._pixelCCT && errorFlag==ERR_NORAM_PX);
+  }});
+  checks.push_back({"PWM and virtual RGBW honor independent tint with derived physical CCT", [] {
+    BusPwm pwm; BusNetwork network;
+    BusManager::setSegmentCCT(0,true,true);
+    pwm.setPixelColor(0,RGBW32(100,100,100,200)); network.setPixelColor(0,RGBW32(100,100,100,200));
+    auto r=pwm._data[0], g=pwm._data[1], b=pwm._data[2];
+    for (unsigned c=0;c<4;c++) CHECK(pwm._data[c]==network._data[c]);
+    CHECK(pwm._data[3]==200);
+    BusManager::setSegmentCCT(255,true,true);
+    pwm.setPixelColor(0,RGBW32(100,100,100,200)); network.setPixelColor(0,RGBW32(100,100,100,200));
+    CHECK(r!=pwm._data[0] || g!=pwm._data[1] || b!=pwm._data[2]);
+    for (unsigned c=0;c<4;c++) CHECK(pwm._data[c]==network._data[c]);
+    CHECK(pwm._data[3]==200);
   }});
   unsigned failures=0;
   for (const auto& check : checks) {

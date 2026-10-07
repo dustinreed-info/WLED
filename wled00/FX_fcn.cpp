@@ -1341,11 +1341,11 @@ void WS2812FX::updatePixelBuffer() {
 }
 
 // Retain CCT storage between frames, resize it with the canvas, and release it
-// when RGB-derived temperature makes it unnecessary. Reset every pixel so gaps
+// when neither manual temperature nor RGB white balance needs it. Reset pixels so gaps
 // and realtime input do not inherit a previous frame's white balance.
 bool WS2812FX::updateCCTBuffer() {
   size_t length = getLengthTotal();
-  bool needed = (hasCCTBus() || correctWB) && !cctFromRgb;
+  bool needed = correctWB || (hasCCTBus() && !cctFromRgb);
   if (!needed || length == 0) {
     p_free(_pixelCCT);
     _pixelCCT = nullptr;
@@ -1834,16 +1834,16 @@ void WS2812FX::show() {
 
   // paint actual pixels
   int oldCCT = Bus::getCCT(); // store original CCT value (since it is global)
+  uint16_t oldWhiteBalance = Bus::getWhiteBalance();
   // when cctFromRgb is true we implicitly calculate WW and CW from RGB values (cct==-1)
   if (cctFromRgb) BusManager::setSegmentCCT(-1);
   // use color gamma correction if enabled, not in realtime mode with gamma disabled or currently overriding RT mode
   bool useGammaCorrection = gammaCorrectCol && !(realtimeMode && arlsDisableGammaCorrection && !realtimeOverride);
 
   for (size_t i = 0; i < totalLen; i++) {
-    // when correctWB is true setSegmentCCT() will convert CCT into K with which we can then
-    // correct/adjust RGB value according to desired CCT value, it will still affect actual WW/CW ratio
-    if (_pixelCCT) { // cctFromRgb already exluded at allocation
-      if (i == 0 || _pixelCCT[i-1] != _pixelCCT[i]) BusManager::setSegmentCCT(_pixelCCT[i], correctWB);
+    // RGB correction retains segment temperature even when physical whites derive CCT from RGB.
+    if (_pixelCCT) {
+      if (i == 0 || _pixelCCT[i-1] != _pixelCCT[i]) BusManager::setSegmentCCT(_pixelCCT[i], correctWB, cctFromRgb);
     }
 
     uint32_t c = _pixels[i]; // need a copy, do not modify _pixels directly (no byte access allowed on ESP32)
@@ -1852,6 +1852,7 @@ void WS2812FX::show() {
     BusManager::setPixelColor(getMappedPixelIndex(i), c);
   }
   Bus::setCCT(oldCCT);  // restore old CCT for ABL adjustments
+  Bus::setWhiteBalance(oldWhiteBalance);
 
   // some buses send asynchronously and this method will return before
   // all of the data has been sent.

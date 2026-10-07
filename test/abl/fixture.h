@@ -99,6 +99,8 @@ class Bus {
 public:
   static constexpr uint8_t NO_DRIVER=0;
   static int16_t _cct;
+  static uint16_t _whiteBalance;
+  /* COLOR_STATE */
   static int8_t _cctBlend;
   static uint8_t _gAWM;
   uint8_t _type=TYPE_WS2805, _autoWhiteMode=RGBW_MODE_MANUAL_ONLY;
@@ -119,6 +121,7 @@ public:
   static uint8_t getGlobalAWMode() { return _gAWM; }
   bool isOffRefreshRequired() const { return false; }
   bool isPWM() const { return false; }
+  virtual void setPixelColor(unsigned, uint32_t)=0;
   virtual void begin() { begun=true; }
   virtual void setBrightness(uint8_t) {}
   virtual uint16_t getLEDCurrent() const = 0;
@@ -129,6 +132,7 @@ public:
   uint32_t autoWhiteCalc(uint32_t, uint8_t&, uint8_t&) const;
 };
 int16_t Bus::_cct=-1;
+uint16_t Bus::_whiteBalance=0;
 int8_t Bus::_cctBlend=0;
 uint8_t Bus::_gAWM=255;
 namespace BusManager {
@@ -138,6 +142,8 @@ namespace BusManager {
   std::vector<std::unique_ptr<Bus>> busses;
   void initializeABL();
   void applyABL();
+  void setSegmentCCT(int16_t, bool=false, bool=false);
+  void setPixelColor(unsigned, uint32_t);
   size_t getNumBusses() { return busses.size(); }
   Bus* getBus(size_t i) { return i<busses.size() ? busses[i].get() : nullptr; }
 }
@@ -149,6 +155,8 @@ uint32_t colorBalanceFromKelvin(uint16_t, uint32_t);
 inline int constrain(int value, int minimum, int maximum) { return std::min(std::max(value, minimum), maximum); }
 struct FakeColorMap { uint8_t getPixelColorOrder(unsigned, uint8_t co) { return co; } } _colorOrderMap;
 uint8_t bri=77;
+bool gammaCorrectCol=false, arlsDisableGammaCorrection=true;
+uint32_t gamma32(uint32_t c) { return c; }
 byte realtimeMode=REALTIME_MODE_INACTIVE, realtimeOverride=REALTIME_OVERRIDE_NONE;
 bool useMainSegmentOnly=false;
 uint8_t scaledBri(uint8_t b) { return b; }
@@ -240,6 +248,8 @@ public:
 class WS2812FX {
 public:
   bool cctFromRgb=false, correctWB=false;
+  uint32_t _pixels[8]={};
+  void paintFrame();
   size_t length=8, _pixelCCTSize=0;
   uint8_t* _pixelCCT=nullptr;
   unsigned _length=8;
