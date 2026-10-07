@@ -838,6 +838,7 @@ class WS2812FX {
       // true private variables
       _pixels(nullptr),
       _pixelCCT(nullptr),
+      _pixelCCTSize(0),
       _suspend(false),
       _brightness(DEFAULT_BRIGHTNESS),
       _length(DEFAULT_LED_COUNT),
@@ -866,7 +867,7 @@ class WS2812FX {
 
     ~WS2812FX() {
       p_free(_pixels);
-      p_free(_pixelCCT); // just in case
+      p_free(_pixelCCT); // cached white balance data
       d_free(customMappingTable);
       _mode.clear();
       _modeData.clear();
@@ -1015,6 +1016,9 @@ class WS2812FX {
   private:
     uint32_t *_pixels;
     uint8_t  *_pixelCCT;
+    size_t    _pixelCCTSize;
+    bool updateCCTBuffer();
+    void blendPixelCCT(size_t pixel, uint32_t color, uint8_t opacity, uint8_t mode, uint8_t cct) const;
     std::vector<Segment> _segments;
 
     volatile bool _suspend;

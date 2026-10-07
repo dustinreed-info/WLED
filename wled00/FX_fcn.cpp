@@ -1060,7 +1060,7 @@ void Segment::refreshLightCapabilities() const {
     if (index == 0xFFFF) continue;  // invalid/missing  pixel
     for (unsigned b = 0; b < BusManager::getNumBusses(); b++) {
       const Bus *bus = BusManager::getBus(b);
-      if (!bus || !bus->isOk()) break;
+      if (!bus || !bus->isOk()) continue;
       if (bus->containsPixel(index)) {
         if (bus->hasRGB() || (strip.cctFromRgb && bus->hasCCT())) capabilities |= SEG_CAPABILITY_RGB;
         if (!strip.cctFromRgb && bus->hasCCT())                   capabilities |= SEG_CAPABILITY_CCT;
@@ -1265,12 +1265,13 @@ void WS2812FX::finalizeInit() {
     bus.iType = BusManager::getI(bus.type, bus.pins, bus.driverType);
   }
   for (auto &bus : busConfigs) {
-    bool use_placeholder = false;
+    bool use_placeholder = Bus::isDigital(bus.type) && bus.iType == I_NONE;
+    if (use_placeholder) errorFlag = ERR_NOT_IMPL;
     unsigned busMemUsage = bus.memUsage(); // does not include DMA/RMT buffer but includes pixel buffers (segment buffer + global buffer)
     mem += busMemUsage;
     // estimate maximum I2S memory usage (only relevant for digital non-2pin busses when I2S is enabled)
     #if defined(WLED_HAS_PARALLEL_I2S)
-    bool usesI2S = (bus.iType & 0x01) == 0; // I2S bus types are even numbered, can't use bus.driverType == 1 as getI() may have defaulted to RMT
+    bool usesI2S = bus.iType != I_NONE && (bus.iType & 0x01) == 0; // I2S bus types are even numbered, can't use bus.driverType == 1 as getI() may have defaulted to RMT
     if (Bus::isDigital(bus.type) && !Bus::is2Pin(bus.type) && usesI2S) {
       #ifdef NPB_CONF_4STEP_CADENCE
       constexpr unsigned stepFactor = 4; // 4 step cadence (4 bits per pixel bit)
@@ -1299,7 +1300,7 @@ void WS2812FX::finalizeInit() {
   _length = 0;
   for (size_t i=0; i<BusManager::getNumBusses(); i++) {
     Bus *bus = BusManager::getBus(i);
-    if (!bus || !bus->isOk() || bus->getStart() + bus->getLength() > MAX_LEDS) break;
+    if (!bus || !bus->isOk() || bus->getStart() + bus->getLength() > MAX_LEDS) continue;
     //RGBW mode is enabled if at least one of the strips is RGBW
     _hasWhiteChannel |= bus->hasWhite();
     //refresh is required to remain off if at least one of the strips requires the refresh.
@@ -1330,10 +1331,40 @@ void WS2812FX::finalizeInit() {
 // update global _pixels[] buffer to match getLengthTotal() note: if allocation fails, WLED will not render anything
 void WS2812FX::updatePixelBuffer() {
   uint32_t requiredMem = getLengthTotal() * sizeof(uint32_t);
+  p_free(_pixelCCT);
+  _pixelCCT = nullptr;
+  _pixelCCTSize = 0;
   p_free(_pixels); // using realloc on large buffers can cause additional fragmentation instead of reducing it
   // use PSRAM if available: there is no measurable perfomance impact between PSRAM and DRAM on S2/S3 with QSPI PSRAM for this buffer
   _pixels = static_cast<uint32_t*>(allocate_buffer(requiredMem, BFRALLOC_ENFORCE_PSRAM | BFRALLOC_NOBYTEACCESS | BFRALLOC_CLEAR));
   DEBUG_PRINTF_P(PSTR("strip buffer size: %uB\n"), requiredMem);
+}
+
+// Retain CCT storage between frames, resize it with the canvas, and release it
+// when RGB-derived temperature makes it unnecessary. Reset every pixel so gaps
+// and realtime input do not inherit a previous frame's white balance.
+bool WS2812FX::updateCCTBuffer() {
+  size_t length = getLengthTotal();
+  bool needed = (hasCCTBus() || correctWB) && !cctFromRgb;
+  if (!needed || length == 0) {
+    p_free(_pixelCCT);
+    _pixelCCT = nullptr;
+    _pixelCCTSize = 0;
+    return true;
+  }
+  if (!_pixelCCT || _pixelCCTSize != length) {
+    p_free(_pixelCCT);
+    _pixelCCT = nullptr;
+    _pixelCCTSize = 0;
+    _pixelCCT = static_cast<uint8_t*>(allocate_buffer(length, BFRALLOC_PREFER_PSRAM));
+    if (!_pixelCCT) {
+      errorFlag = ERR_NORAM_PX;
+      return false;
+    }
+    _pixelCCTSize = length;
+  }
+  memset(_pixelCCT, 127, length);
+  return true;
 }
 
 void WS2812FX::service() {
@@ -1436,6 +1467,14 @@ static uint8_t _dummy     (uint8_t a, uint8_t b) { return a; } // dummy (same as
 
 #define BLENDMODES  17 // number of blend modes must match "bm" in index.js, all cases must be handled in segblend() @ blendSegment()
 
+// A layer that leaves the underlying color untouched must also retain its CCT.
+void WLED_O2_ATTR WS2812FX::blendPixelCCT(size_t pixel, uint32_t color, uint8_t opacity, uint8_t mode, uint8_t cct) const {
+  constexpr uint8_t BOTTOM_MODE = 1;
+  constexpr uint8_t STENCIL_MODE = 16;
+  if (!_pixelCCT || opacity == 0 || mode == BOTTOM_MODE || (mode == STENCIL_MODE && color == BLACK)) return;
+  _pixelCCT[pixel] = cct;
+}
+
 void WS2812FX::blendSegment(const Segment &topSegment) const {
   typedef uint8_t(*FuncType)(uint8_t, uint8_t);
   // function pointer array: fill with _dummy if using special case: avoid OOB access and always provide a valid path
@@ -1526,7 +1565,7 @@ void WS2812FX::blendSegment(const Segment &topSegment) const {
         int idx = start + p + off;
         if (idx >= topSegment.stop) idx -= length;
         strip[idx] = color_blend(strip[idx], segblend(c_a, strip[idx]), opacity);
-        if (_pixelCCT) _pixelCCT[idx] = cct;
+        blendPixelCCT(idx, c_a, opacity, blendMode, cct);
       }
       return;
     }
@@ -1604,7 +1643,7 @@ void WS2812FX::blendSegment(const Segment &topSegment) const {
       const int baseY = topSegment.startY + y;
       size_t indx = XY(baseX, baseY); // absolute address on strip
       _pixels[indx] = color_blend(_pixels[indx], segblend(c, _pixels[indx]), o);
-      if (_pixelCCT) _pixelCCT[indx] = cct;
+      blendPixelCCT(indx, c, o, blendMode, cct);
       // Apply mirroring if enabled
       if (topSegment.mirror || topSegment.mirror_y) {
         const int mirrorX = topSegment.start  + width  - x - 1;
@@ -1616,9 +1655,9 @@ void WS2812FX::blendSegment(const Segment &topSegment) const {
         if (topSegment.mirror_y)                      _pixels[idxMY] = color_blend(_pixels[idxMY], segblend(c, _pixels[idxMY]), o);
         if (topSegment.mirror && topSegment.mirror_y) _pixels[idxMM] = color_blend(_pixels[idxMM], segblend(c, _pixels[idxMM]), o);
         if (_pixelCCT) {
-          if (topSegment.mirror)                        _pixelCCT[idxMX] = cct;
-          if (topSegment.mirror_y)                      _pixelCCT[idxMY] = cct;
-          if (topSegment.mirror && topSegment.mirror_y) _pixelCCT[idxMM] = cct;
+          if (topSegment.mirror)                        blendPixelCCT(idxMX, c, o, blendMode, cct);
+          if (topSegment.mirror_y)                      blendPixelCCT(idxMY, c, o, blendMode, cct);
+          if (topSegment.mirror && topSegment.mirror_y) blendPixelCCT(idxMM, c, o, blendMode, cct);
         }
       }
     };
@@ -1705,12 +1744,12 @@ void WS2812FX::blendSegment(const Segment &topSegment) const {
         indxM += topSegment.offset; // offset/phase
         if (indxM >= topSegment.stop) indxM -= length; // wrap
         _pixels[indxM] = color_blend(_pixels[indxM], segblend(c, _pixels[indxM]), o);
-        if (_pixelCCT) _pixelCCT[indxM] = cct;
+        blendPixelCCT(indxM, c, o, blendMode, cct);
       }
       indx += topSegment.offset; // offset/phase
       if (indx >= topSegment.stop) indx -= length; // wrap
       _pixels[indx] = color_blend(_pixels[indx], segblend(c, _pixels[indx]), o);
-      if (_pixelCCT) _pixelCCT[indx] = cct;
+      blendPixelCCT(indx, c, o, blendMode, cct);
     };
 
     // if we blend using "push" style we need to "shift" canvas to left/right/
@@ -1770,9 +1809,9 @@ void WS2812FX::show() {
   // WARNING: as WLED doesn't handle CCT on pixel level but on Segment level instead
   // we need to keep track of each pixel's CCT when blending segments (if CCT is present)
   // and then set appropriate CCT from that pixel during paint (see below).
-  if ((hasCCTBus() || correctWB) && !cctFromRgb)
-    _pixelCCT = static_cast<uint8_t*>(allocate_buffer(totalLen * sizeof(uint8_t), BFRALLOC_PREFER_PSRAM)); // allocate CCT buffer if necessary, prefer PSRAM
-  if (_pixelCCT) memset(_pixelCCT, 127, totalLen); // set neutral (50:50) CCT
+  // Keep the last displayed frame on allocation failure rather than repainting
+  // it with a temperature inferred from RGB after losing the segment CCT data.
+  if (!updateCCTBuffer()) return;
 
   if (realtimeMode == REALTIME_MODE_INACTIVE || useMainSegmentOnly || realtimeOverride > REALTIME_OVERRIDE_NONE) {
     // clear frame buffer
@@ -1807,9 +1846,6 @@ void WS2812FX::show() {
     BusManager::setPixelColor(getMappedPixelIndex(i), c);
   }
   Bus::setCCT(oldCCT);  // restore old CCT for ABL adjustments
-
-  p_free(_pixelCCT);
-  _pixelCCT = nullptr;
 
   // some buses send asynchronously and this method will return before
   // all of the data has been sent.
@@ -1948,7 +1984,7 @@ uint16_t WS2812FX::getLengthPhysical() const {
 bool WS2812FX::hasRGBWBus() const {
   for (size_t b = 0; b < BusManager::getNumBusses(); b++) {
     const Bus *bus = BusManager::getBus(b);
-    if (!bus || !bus->isOk()) break;
+    if (!bus || !bus->isOk()) continue;
     if (bus->hasRGB() && bus->hasWhite()) return true;
   }
   return false;
@@ -1958,7 +1994,7 @@ bool WS2812FX::hasCCTBus() const {
   if (cctFromRgb && !correctWB) return false;
   for (size_t b = 0; b < BusManager::getNumBusses(); b++) {
     const Bus *bus = BusManager::getBus(b);
-    if (!bus || !bus->isOk()) break;
+    if (!bus || !bus->isOk()) continue;
     if (bus->hasCCT()) return true;
   }
   return false;
@@ -2106,11 +2142,11 @@ void WS2812FX::fixInvalidSegments() {
 //true if all segments align with a bus, or if a segment covers the total length
 //irrelevant in 2D set-up
 bool WS2812FX::checkSegmentAlignment() const {
-  bool aligned = false;
   for (const Segment &seg : _segments) {
+    bool aligned = false;
     for (unsigned b = 0; b<BusManager::getNumBusses(); b++) {
       const Bus *bus = BusManager::getBus(b);
-      if (!bus || !bus->isOk()) break;
+      if (!bus || !bus->isOk()) continue;
       if (seg.start == bus->getStart() && seg.stop == bus->getStart() + bus->getLength()) aligned = true;
     }
     if (seg.start == 0 && seg.stop == _length) aligned = true;

@@ -3,10 +3,15 @@
 #define CHECK(c) do { if (!(c)) throw std::runtime_error(#c); } while (0)
 
 static void resetState() {
+  strip.releaseCCT();
+  strip.length=8; errorFlag=0; cctAllocations=0; cctFrees=0; failCCTAllocation=false;
+  strip._length=8; strip._segments.clear();
+  strip._hasWhiteChannel=false; strip._isOffRefreshRequired=false;
   Bus::_cct=-1; Bus::_cctBlend=0; Bus::_gAWM=255;
   BusManager::busses.clear(); BusManager::_useABL=true;
   BusManager::_gMilliAmpsMax=0; BusManager::_gMilliAmpsUsed=0;
-  PolyBus::_useParallelI2S=false;
+  PolyBus::resetChannelTracking();
+  strip.cctFromRgb=false; strip.correctWB=false;
 }
 
 static void checkColorReadback(uint8_t type) {
@@ -140,6 +145,130 @@ int main() {
     for (unsigned i=0;i<100;i++) ptr->setPixelColor(i,RGBW32(0,0,0,255));
     Bus::_cct=-1; BusManager::applyABL();
     for (unsigned i=1;i<=100;i++) CHECK(ptr->raw->pixels[i].WW>0 && ptr->raw->pixels[i].WW<255 && ptr->raw->pixels[i].CW==0);
+  }});
+  checks.push_back({"mixed I2S protocols are rejected without consuming channels", [] {
+    uint8_t pins[2]={16,17};
+    CHECK(PolyBus::getI(TYPE_WS2812_RGB,pins,1)==I_32_I2_NEO_3);
+    CHECK(PolyBus::getI(TYPE_WS2805,pins,1)==I_NONE);
+    CHECK(PolyBus::_i2sChannelsAssigned==1 && !PolyBus::_useParallelI2S);
+    CHECK(PolyBus::getI(TYPE_WS2812_RGB,pins,1)==I_32_I2_NEO_3);
+    CHECK(PolyBus::_i2sChannelsAssigned==2 && PolyBus::_useParallelI2S);
+  }});
+  checks.push_back({"RMT exhaustion does not substitute the wrong I2S protocol", [] {
+    uint8_t pins[2]={16,17};
+    CHECK(PolyBus::getI(TYPE_WS2805,pins,1)==I_32_I2_2805_5);
+    CHECK(PolyBus::getI(TYPE_WS2812_RGB,pins,0)==I_32_RN_NEO_3);
+    CHECK(PolyBus::getI(TYPE_WS2812_RGB,pins,0)==I_32_RN_NEO_3);
+    CHECK(PolyBus::getI(TYPE_WS2812_RGB,pins,0)==I_NONE);
+    CHECK(PolyBus::getI(TYPE_WS2805,pins,0)==I_32_I2_2805_5);
+  }});
+  checks.push_back({"unsupported digital types do not reserve driver channels", [] {
+    uint8_t pins[2]={16,17};
+    CHECK(PolyBus::getI(17,pins,0)==I_NONE);
+    CHECK(PolyBus::_rmtChannelsAssigned==0);
+    CHECK(PolyBus::getI(17,pins,1)==I_NONE);
+    CHECK(PolyBus::_i2sChannelsAssigned==0);
+  }});
+  checks.push_back({"invalid outputs do not hide later WS2805 capabilities", [] {
+    auto bad=std::make_unique<BusDigital>(1,0,TYPE_WS2812_RGB); bad->_valid=false;
+    BusManager::busses.push_back(std::move(bad));
+    BusManager::busses.push_back(std::make_unique<BusDigital>(1));
+    CHECK(strip.hasCCTBus() && strip.hasRGBWBus());
+    Segment segment; segment.refreshLightCapabilities();
+    CHECK(segment._capabilities==(SEG_CAPABILITY_RGB|SEG_CAPABILITY_W|SEG_CAPABILITY_CCT));
+  }});
+  checks.push_back({"CCT storage is reused across frames and clears stale temperatures", [] {
+    BusManager::busses.push_back(std::make_unique<BusDigital>(8));
+    for (unsigned frame=0;frame<100;frame++) {
+      CHECK(strip.updateCCTBuffer());
+      CHECK(strip._pixelCCT && strip._pixelCCT[0]==127 && strip._pixelCCT[7]==127);
+      strip._pixelCCT[0]=0; strip._pixelCCT[7]=255;
+      strip.finishFrame();
+    }
+    CHECK(cctAllocations==1 && cctFrees==0);
+  }});
+  checks.push_back({"CCT storage follows canvas resizing", [] {
+    BusManager::busses.push_back(std::make_unique<BusDigital>(8));
+    CHECK(strip.updateCCTBuffer()); strip.finishFrame(); strip.length=12;
+    CHECK(strip.updateCCTBuffer() && strip._pixelCCT[11]==127);
+    CHECK(cctAllocations==2 && cctFrees==1);
+    strip.finishFrame(); strip.length=0;
+    CHECK(strip.updateCCTBuffer() && !strip._pixelCCT);
+    CHECK(cctAllocations==2 && cctFrees==2);
+  }});
+  checks.push_back({"RGB-derived temperature releases cached CCT storage", [] {
+    BusManager::busses.push_back(std::make_unique<BusDigital>(8));
+    CHECK(strip.updateCCTBuffer()); strip.finishFrame(); strip.cctFromRgb=true;
+    CHECK(strip.updateCCTBuffer() && !strip._pixelCCT);
+    CHECK(cctFrees==1);
+    strip.cctFromRgb=false;
+    CHECK(strip.updateCCTBuffer() && cctAllocations==2);
+  }});
+  checks.push_back({"CCT allocation failure rejects the frame and can recover", [] {
+    BusManager::busses.push_back(std::make_unique<BusDigital>(8));
+    failCCTAllocation=true;
+    CHECK(!strip.updateCCTBuffer() && !strip._pixelCCT && errorFlag==ERR_NORAM_PX);
+    failCCTAllocation=false;
+    CHECK(strip.updateCCTBuffer() && strip._pixelCCT[0]==127);
+    strip.length=16; failCCTAllocation=true;
+    CHECK(!strip.updateCCTBuffer() && !strip._pixelCCT);
+  }});
+  checks.push_back({"RGB outputs only allocate CCT data for white balance correction", [] {
+    BusManager::busses.push_back(std::make_unique<BusDigital>(8,0,TYPE_WS2812_RGB));
+    CHECK(strip.updateCCTBuffer() && !strip._pixelCCT && cctAllocations==0);
+    strip.correctWB=true;
+    CHECK(strip.updateCCTBuffer() && strip._pixelCCT);
+    strip.correctWB=false;
+    CHECK(strip.updateCCTBuffer() && !strip._pixelCCT);
+  }});
+  checks.push_back({"bottom blend mode preserves the underlying white temperature", [] {
+    BusManager::busses.push_back(std::make_unique<BusDigital>(8));
+    CHECK(strip.updateCCTBuffer()); strip._pixelCCT[0]=0;
+    strip.blendPixelCCT(0,RGBW32(0,0,0,255),255,1,255);
+    CHECK(strip._pixelCCT[0]==0);
+  }});
+  checks.push_back({"transparent stencil pixels preserve the underlying temperature", [] {
+    BusManager::busses.push_back(std::make_unique<BusDigital>(8));
+    CHECK(strip.updateCCTBuffer()); strip._pixelCCT[7]=0;
+    strip.blendPixelCCT(7,BLACK,255,16,255); CHECK(strip._pixelCCT[7]==0);
+    strip.blendPixelCCT(7,RGBW32(0,0,0,255),255,16,255); CHECK(strip._pixelCCT[7]==255);
+  }});
+  checks.push_back({"zero-opacity layers do not change white temperature", [] {
+    BusManager::busses.push_back(std::make_unique<BusDigital>(8));
+    CHECK(strip.updateCCTBuffer()); strip._pixelCCT[0]=255;
+    strip.blendPixelCCT(0,RGBW32(0,0,0,255),0,0,0); CHECK(strip._pixelCCT[0]==255);
+    strip.blendPixelCCT(0,RGBW32(0,0,0,255),255,0,0); CHECK(strip._pixelCCT[0]==0);
+  }});
+  checks.push_back({"CCT blending tolerates RGB-only frames without a CCT buffer", [] {
+    strip.blendPixelCCT(0,RGBW32(255,0,0,0),255,0,255);
+    CHECK(strip._pixelCCT==nullptr);
+  }});
+  checks.push_back({"custom overlapping segments are not mistaken for automatic segments", [] {
+    BusManager::busses.push_back(std::make_unique<BusDigital>(8));
+    Segment full; full.stop=8;
+    Segment custom; custom.start=1; custom.stop=6;
+    strip._segments={full,custom}; CHECK(!strip.checkSegmentAlignment());
+    strip._segments={custom,full}; CHECK(!strip.checkSegmentAlignment());
+  }});
+  checks.push_back({"all aligned segments remain eligible for automatic resizing", [] {
+    BusManager::busses.push_back(std::make_unique<BusDigital>(4));
+    auto second=std::make_unique<BusDigital>(4); second->_start=4;
+    BusManager::busses.push_back(std::move(second));
+    Segment left; left.stop=4;
+    Segment right; right.start=4; right.stop=8;
+    strip._segments={left,right}; CHECK(strip.checkSegmentAlignment());
+  }});
+  checks.push_back({"later valid outputs initialize despite invalid earlier outputs", [] {
+    auto bad=std::make_unique<BusDigital>(1,0,TYPE_WS2812_RGB); bad->_valid=false;
+    auto* badPtr=bad.get(); BusManager::busses.push_back(std::move(bad));
+    auto over=std::make_unique<BusDigital>(1,0,TYPE_WS2812_RGB); over->_start=MAX_LEDS;
+    auto* overPtr=over.get(); BusManager::busses.push_back(std::move(over));
+    auto valid=std::make_unique<BusDigital>(8); valid->_start=16;
+    auto* validPtr=valid.get(); BusManager::busses.push_back(std::move(valid));
+    strip.initializeOutputs();
+    CHECK(strip._length==24 && strip._hasWhiteChannel);
+    CHECK(validPtr->begun && validPtr->_bri==bri);
+    CHECK(!badPtr->begun && !overPtr->begun);
   }});
   unsigned failures=0;
   for (const auto& check : checks) {

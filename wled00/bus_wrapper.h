@@ -1337,6 +1337,12 @@ class PolyBus {
         case TYPE_WS2801:  t = I_SS_WS1_3; break;
         case TYPE_P9813:   t = I_SS_P98_3; break;
       }
+      if (t == I_NONE) {
+        #ifndef ESP8266
+        _2PchannelsAssigned--;
+        #endif
+        return I_NONE;
+      }
       if (t > I_NONE && isHSPI) t--; //hardware SPI has one smaller ID than software
     } else {
       #ifdef ESP8266
@@ -1412,6 +1418,14 @@ class PolyBus {
         case TYPE_SM16825:
           t = I_32_RN_SM16825_5 + offset; break;
       }
+      // Parallel I2S shares a pixel format and waveform. Reject incompatible
+      // outputs rather than silently transmitting another LED protocol.
+      if (t == I_NONE || (offset == 1 && _i2sChannelsAssigned > 1 && t != _parallelBusItype)) {
+        if (offset == 1) _i2sChannelsAssigned--;
+        else _rmtChannelsAssigned--;
+        DEBUGBUS_PRINTF_P(PSTR("Bus: Unsupported output type %u for requested driver.\n"), unsigned(busType));
+        return I_NONE;
+      }
       // If using parallel I2S, set the type accordingly
       if (_i2sChannelsAssigned == 1 && offset == 1) { // first I2S channel request, lock the type
         _parallelBusItype = t;
@@ -1419,9 +1433,8 @@ class PolyBus {
         _useParallelI2S = true; // ESP32-S3 always uses parallel I2S (LCD method)
         #endif
       }
-      else if (offset == 1) { // not first I2S channel, use locked type and enable parallel flag
+      else if (offset == 1) { // matching I2S output, enable parallel mode
         _useParallelI2S = true;
-        t = _parallelBusItype;
       }
       #endif
     }

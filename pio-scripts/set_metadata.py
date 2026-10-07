@@ -94,6 +94,23 @@ def has_def(cppdefs, name):
     return False
 
 
+def get_git_revision():
+    """Return the source revision and mark tracked changes, or None without Git."""
+    try:
+        result = subprocess.run(['git', 'rev-parse', '--short=12', 'HEAD'],
+                                capture_output=True, text=True, check=True)
+        revision = result.stdout.strip()
+        if not re.fullmatch(r'[0-9a-f]{12,40}', revision):
+            return None
+        status = subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--'],
+                                capture_output=True, text=True)
+        if status.returncode not in (0, 1):
+            return None
+        return revision + ('-dirty' if status.returncode == 1 else '')
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+
+
 def add_wled_metadata_flags(env, node):    
     cdefs = env["CPPDEFINES"].copy()
 
@@ -101,6 +118,11 @@ def add_wled_metadata_flags(env, node):
         repo = get_github_repo()
         if repo:
             cdefs.append(("WLED_REPO", f"\\\"{repo}\\\""))
+
+    if not has_def(cdefs, "WLED_GIT_REVISION"):
+        revision = get_git_revision()
+        if revision:
+            cdefs.append(("WLED_GIT_REVISION", f"\\\"{revision}\\\""))
 
     cdefs.append(("WLED_VERSION", WLED_VERSION))
 

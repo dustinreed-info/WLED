@@ -34,9 +34,11 @@ it('digital pixel readback and automatic brightness limiter regressions', t => {
   const wrapper = read('bus_wrapper.h');
   const colors = read('colors.cpp');
   const constants = read('const.h');
+  const fx = read('FX_fcn.cpp');
+  const fxHeader = read('FX.h');
 
-  const defines = [constants, wrapper].flatMap(source => source.split('\n').filter(line =>
-    /^#define (?:TYPE_\w+|RGBW_MODE_\w+|AW_GLOBAL_DISABLED|COL_ORDER_\w+|I_\w+)\s/.test(line)
+  const defines = [constants, wrapper, fxHeader].flatMap(source => source.split('\n').filter(line =>
+    /^#define (?:TYPE_\w+|RGBW_MODE_\w+|AW_GLOBAL_DISABLED|COL_ORDER_\w+|I_\w+|SEG_CAPABILITY_\w+)\s/.test(line)
   )).join('\n');
   const aliases = [...wrapper.matchAll(/^#define (B_(?:32|HS|SS)_\w+)\s+NeoPixelBus/gm)].map(([, name]) => {
     let color = 'RgbColor';
@@ -57,7 +59,7 @@ it('digital pixel readback and automatic brightness limiter regressions', t => {
   assert.ok(ma, 'Missing ESP current constant');
 
   let fixture = fs.readFileSync(path.join(__dirname, '../test/abl/fixture.h'), 'utf8');
-  const capabilities = ['static constexpr bool hasRGB(', 'static constexpr bool hasWhite(', 'static constexpr bool hasCCT(']
+  const capabilities = ['static constexpr bool hasRGB(', 'static constexpr bool hasWhite(', 'static constexpr bool hasCCT(', 'static constexpr bool  isDigital(', 'static constexpr bool  is2Pin(']
     .map(signature => extractFunction(header, signature)).join('\n');
   fixture = fixture.replace('/* CONSTANTS */', `${defines}\n#define MA_FOR_ESP ${ma[1]}`)
     .replace('/* DRIVER_ALIASES */', aliases)
@@ -66,13 +68,18 @@ it('digital pixel readback and automatic brightness limiter regressions', t => {
     .replaceAll('CURRENT_TYPE', currentType)
     .replace('/* CURRENT_MEMBER */', member[0]);
 
-  let poly = 'class PolyBus { public: inline static bool _useParallelI2S = false;\n';
+  let poly = `class PolyBus { public:
+    inline static bool _useParallelI2S = false;
+    inline static uint8_t _rmtChannelsAssigned=0, _rmtChannel=0, _i2sChannelsAssigned=0, _parallelBusItype=0, _2PchannelsAssigned=0;
+  `;
   poly += extractFunction(wrapper, 'static void setPixelColor(') + '\n';
   if (wrapper.includes('static RgbwColor getRgbwwColor(')) {
     poly += extractFunction(wrapper, 'static RgbwColor getRgbwwColor(const RgbwwColor&') + '\n';
     poly += extractFunction(wrapper, 'static RgbwColor getRgbwwColor(const Rgbww80Color&') + '\n';
   }
-  poly += extractFunction(wrapper, 'static uint32_t getPixelColor(') + '\n};\n';
+  poly += extractFunction(wrapper, 'static uint32_t getPixelColor(') + '\n';
+  poly += extractFunction(wrapper, 'static void resetChannelTracking(') + '\n';
+  poly += extractFunction(wrapper, 'static uint8_t getI(') + '\n};\n';
   fixture = fixture.replace('/* POLYBUS */', poly);
 
   let source = fixture + '\n';
@@ -82,6 +89,31 @@ it('digital pixel readback and automatic brightness limiter regressions', t => {
     'void BusDigital::estimateCurrent(', 'void BusDigital::applyBriLimit(',
     'void IRAM_ATTR BusDigital::setPixelColor(', 'void BusManager::initializeABL(', 'void BusManager::applyABL(']) {
     source += extractFunction(bus, signature) + '\n';
+  }
+  source += extractFunction(fx, 'bool WS2812FX::hasRGBWBus(') + '\n';
+  source += extractFunction(fx, 'bool WS2812FX::hasCCTBus(') + '\n';
+  source += extractFunction(fx, 'bool WS2812FX::checkSegmentAlignment(') + '\n';
+  source += extractFunction(fx, 'void Segment::refreshLightCapabilities(') + '\n';
+  const initializationStart = fx.indexOf('  _length = 0;', fx.indexOf('void WS2812FX::finalizeInit('));
+  const initializationEnd = fx.indexOf('  BusManager::initializeABL();', initializationStart);
+  assert.ok(initializationStart > 0 && initializationEnd > initializationStart);
+  source += 'void WS2812FX::initializeOutputs() {\n' + fx.slice(initializationStart, initializationEnd) + '\n}\n';
+  if (fx.includes('WS2812FX::blendPixelCCT(')) {
+    source += extractFunction(fx, 'void WLED_O2_ATTR WS2812FX::blendPixelCCT(') + '\n';
+  } else {
+    source += 'void WS2812FX::blendPixelCCT(size_t pixel, uint32_t, uint8_t, uint8_t, uint8_t cct) const { if (_pixelCCT) _pixelCCT[pixel]=cct; }\n';
+  }
+  if (fx.includes('bool WS2812FX::updateCCTBuffer(')) {
+    source += extractFunction(fx, 'bool WS2812FX::updateCCTBuffer(') + '\n';
+    source += 'void WS2812FX::finishFrame() {}\n';
+  } else {
+    const showStart = fx.indexOf('void WS2812FX::show(');
+    const allocationStart = fx.indexOf('  if ((hasCCTBus()', showStart);
+    const allocationEnd = fx.indexOf('  if (realtimeMode', allocationStart);
+    assert.ok(allocationStart > showStart && allocationEnd > allocationStart);
+    source += 'bool WS2812FX::updateCCTBuffer() { size_t totalLen=getLengthTotal();\n';
+    source += fx.slice(allocationStart, allocationEnd) + '\nreturn true; }\n';
+    source += 'void WS2812FX::finishFrame() { p_free(_pixelCCT); _pixelCCT=nullptr; }\n';
   }
   if (member[0].startsWith('static ')) {
     source += `${currentType} BusDigital::_milliAmpsTotal = 0;\n`;
