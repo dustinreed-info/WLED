@@ -41,12 +41,17 @@ it('realtime DDP and serial Ambilight packet regressions', t => {
   const fx = read('FX_fcn.cpp');
   const constants = read('const.h'), e131 = read('src/dependencies/e131/ESPAsyncE131.h');
   const defines = [constants, e131].flatMap(source => source.split('\n').filter(line =>
-    /^#define (?:DDP_\w+|REALTIME_MODE_\w+|REALTIME_OVERRIDE_\w+)\s/.test(line)
+    /^#define (?:DDP_\w+|REALTIME_MODE_\w+|REALTIME_OVERRIDE_\w+|CALL_MODE_\w+)\s/.test(line)
   )).join('\n');
   let source = fs.readFileSync(path.join(__dirname, '../test/realtime/fixture.h'), 'utf8');
   source = source.replace('/* CONSTANTS */', defines);
   source += extract(fx, 'uint32_t WS2812FX::getRealtimePixelColor(') + '\n';
   source += extract(udp, 'void realtimeLock(') + '\n';
+  source += extract(udp, 'void exitRealtime(') + '\n';
+  const maintenanceStart = udp.indexOf('  if (e131NewData', udp.indexOf('void handleNotifications('));
+  const maintenanceEnd = udp.indexOf('  //receive UDP notifications', maintenanceStart);
+  assert.ok(maintenanceStart >= 0 && maintenanceEnd > maintenanceStart);
+  source += 'static void checkRealtimeMaintenance() {\n' + udp.slice(maintenanceStart, maintenanceEnd) + '}\n';
   if (udp.includes('static bool mapRealtimePixel(')) source += extract(udp, 'static bool mapRealtimePixel(') + '\n';
   source += extract(udp, 'void setRealtimePixel(') + '\n';
   if (udp.includes('uint32_t getRealtimePixel(')) source += extract(udp, 'uint32_t getRealtimePixel(') + '\n';

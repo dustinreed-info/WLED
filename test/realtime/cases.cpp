@@ -177,6 +177,44 @@ int main() {
     useMainSegmentOnly=true; strip.main.count=0;
     CHECK(getRealtimePixel(0)==0 && strip.getRealtimePixelColor(0)==0);
   }});
+  cases.push_back({"finite realtime timeout expires after its ordinary deadline", [] {
+    fakeTime=100; realtimeLock(2500,REALTIME_MODE_DDP);
+    fakeTime=2600; checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_DDP);
+    fakeTime=2601; checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_INACTIVE);
+  }});
+  cases.push_back({"finite realtime deadline survives millis rollover", [] {
+    fakeTime=UINT32_MAX-9; realtimeLock(25,REALTIME_MODE_DDP);
+    checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_DDP);
+    fakeTime=8; checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_DDP);
+    fakeTime=16; checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_INACTIVE);
+  }});
+  cases.push_back({"finite timeout cannot collide with the forever sentinel", [] {
+    fakeTime=UINT32_MAX-25; realtimeLock(25,REALTIME_MODE_DDP);
+    CHECK(realtimeTimeout!=UINT32_MAX);
+    checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_DDP);
+    fakeTime=100; checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_INACTIVE);
+  }});
+  cases.push_back({"finite timeout cannot collide with the cancellation sentinel", [] {
+    fakeTime=UINT32_MAX-24; realtimeLock(25,REALTIME_MODE_DDP);
+    CHECK(realtimeTimeout!=0);
+    checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_DDP);
+    fakeTime=100; checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_INACTIVE);
+  }});
+  cases.push_back({"indefinite realtime holds remain indefinite across rollover", [] {
+    for (uint32_t hold : {65000u,255001u}) {
+      realtimeTimeout=0; fakeTime=UINT32_MAX-10; realtimeLock(hold,REALTIME_MODE_DDP);
+      CHECK(realtimeTimeout==UINT32_MAX);
+      checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_DDP);
+      fakeTime=100; checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_DDP);
+      realtimeLock(2500,REALTIME_MODE_DDP); CHECK(realtimeTimeout==UINT32_MAX);
+    }
+  }});
+  cases.push_back({"explicit realtime cancellation works immediately around rollover", [] {
+    for (uint32_t now : {UINT32_MAX-10,0u,100u}) {
+      realtimeMode=REALTIME_MODE_DDP; realtimeTimeout=0; fakeTime=now;
+      checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_INACTIVE);
+    }
+  }});
   unsigned failures=0;
   for (const auto& entry : cases) {
     reset();
