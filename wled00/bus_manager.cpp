@@ -68,12 +68,17 @@ uint8_t IRAM_ATTR ColorOrderMap::getPixelColorOrder(uint16_t pix, uint8_t defaul
 
 
 void Bus::calculateCCT(uint32_t c, uint8_t &ww, uint8_t &cw) {
+  calculateCCT(c, ww, cw, _cct);
+}
+
+// Explicit temperature permits layer composition without changing global bus state.
+void Bus::calculateCCT(uint32_t c, uint8_t &ww, uint8_t &cw, int16_t cctValue) {
   unsigned cct = 0; //0 - full warm white, 255 - full cold white
   unsigned w = W(c);
 
-  if (_cct > -1) {                                    // using RGB?
-    if (_cct >= 1900)    cct = (_cct - 1900) >> 5;    // convert K in relative format
-    else if (_cct < 256) cct = _cct;                  // already relative
+  if (cctValue > -1) {                                // using RGB?
+    if (cctValue >= 1900)    cct = (cctValue - 1900) >> 5; // convert K in relative format
+    else if (cctValue < 256) cct = cctValue;              // already relative
   } else {
     cct = (approximateKelvinFromRGB(c) - 1900) >> 5;  // convert K (from RGB value) to relative format
   }
@@ -98,10 +103,17 @@ void Bus::calculateCCT(uint32_t c, uint8_t &ww, uint8_t &cw) {
   cw = (w * cw) / 255;
 }
 
+// Match auto-white extraction before RGB tint or brightness is applied.
+uint8_t Bus::getWhiteValue(uint32_t c, uint8_t mode) {
+  if (mode == RGBW_MODE_MANUAL_ONLY || (mode == RGBW_MODE_DUAL && W(c) > 0)) return W(c);
+  unsigned r = R(c), g = G(c), b = B(c);
+  if (mode == RGBW_MODE_MAX) return r > g ? (r > b ? r : b) : (g > b ? g : b);
+  return r < g ? (r < b ? r : b) : (g < b ? g : b);
+}
+
 // calculates white channel and CCT values based on given settings
 uint32_t Bus::autoWhiteCalc(uint32_t c, uint8_t &ww, uint8_t &cw) const {
-  unsigned aWM = _autoWhiteMode;
-  if (_gAWM < AW_GLOBAL_DISABLED) aWM = _gAWM;
+  unsigned aWM = getEffectiveAutoWhiteMode();
   CRGBW cIn = c; // save original color for CCT calculation
   unsigned w = W(c);
   if (aWM != RGBW_MODE_MANUAL_ONLY) {

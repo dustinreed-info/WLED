@@ -62,6 +62,7 @@ struct Segment {
 struct WS2812FX {
   std::vector<uint32_t> colors=std::vector<uint32_t>(8,0), shown=colors;
   uint32_t* _pixels=colors.data();
+  uint32_t* _pixelWhites[5]={};
   uint16_t customMappingSize=0;
   uint16_t* customMappingTable=nullptr;
   Segment main;

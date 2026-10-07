@@ -34,6 +34,7 @@ using std::max;
 #define WLED_MAX_RMT_CHANNELS 2
 #define WLED_MAX_I2S_CHANNELS 8
 #define MAX_LEDS 60000
+#define WLED_MAX_SEGNAME_LEN 32
 
 struct RgbwColor;
 struct RgbColor {
@@ -118,6 +119,7 @@ public:
   unsigned getStart() const { return _start; }
   bool containsPixel(unsigned n) const { return n>=_start && n<_start+getLength(); }
   uint8_t getAutoWhiteMode() const { return _autoWhiteMode; }
+  /* WHITE_MODE */
   static uint8_t getGlobalAWMode() { return _gAWM; }
   bool isOffRefreshRequired() const { return false; }
   bool isPWM() const { return false; }
@@ -131,6 +133,8 @@ public:
   virtual CURRENT_TYPE getUsedCurrent() const = 0;
   virtual unsigned getLength() const = 0;
   static void calculateCCT(uint32_t, uint8_t&, uint8_t&);
+  static void calculateCCT(uint32_t, uint8_t&, uint8_t&, int16_t);
+  static uint8_t getWhiteValue(uint32_t, uint8_t);
   uint32_t autoWhiteCalc(uint32_t, uint8_t&, uint8_t&) const;
 };
 int16_t Bus::_cct=-1;
@@ -157,13 +161,17 @@ uint32_t colorBalanceFromKelvin(uint16_t, uint32_t);
 inline int constrain(int value, int minimum, int maximum) { return std::min(std::max(value, minimum), maximum); }
 struct FakeColorMap { uint8_t getPixelColorOrder(unsigned, uint8_t co) { return co; } } _colorOrderMap;
 uint8_t bri=77;
+uint8_t briOld=77, briT=77, blendingStyle=TRANSITION_FADE;
 bool gammaCorrectCol=false, arlsDisableGammaCorrection=true;
-uint32_t gamma32(uint32_t c) { return c; }
+/* GAMMA */
+uint32_t color_blend(uint32_t, uint32_t, uint8_t);
+inline uint32_t color_blend16(uint32_t a, uint32_t b, uint16_t p) { return color_blend(a,b,p>>8); }
 byte realtimeMode=REALTIME_MODE_INACTIVE, realtimeOverride=REALTIME_OVERRIDE_NONE;
 bool useMainSegmentOnly=false;
 uint8_t scaledBri(uint8_t b) { return b; }
 
 constexpr uint32_t BFRALLOC_PREFER_PSRAM=1;
+constexpr uint32_t BFRALLOC_ENFORCE_PSRAM=2, BFRALLOC_NOBYTEACCESS=4;
 constexpr uint8_t ERR_NORAM_PX=7;
 uint8_t errorFlag=0;
 unsigned cctAllocations=0, cctFrees=0;
@@ -246,30 +254,70 @@ public:
 
 class Segment {
 public:
-  inline static unsigned maxWidth=1;
+  inline static unsigned maxWidth=1, maxHeight=1;
   unsigned start=0, stop=1, startY=0, stopY=1;
   mutable unsigned _capabilities=0;
   uint8_t cct=127;
+  bool on=true;
+  bool mirror=false, mirror_y=false, reverse=false, reverse_y=false, transpose=false;
+  uint8_t grouping=1, spacing=0, opacity=255, mode=0, blendMode=0;
+  unsigned offset=0, transitionProgress=65535;
+  const char* name=nullptr;
+  const Segment* oldSegment=nullptr;
+  uint32_t pixels[8]={};
+  inline static int clipStartX=0, clipStopX=0, clipStartY=0, clipStopY=0;
+  bool isInTransition() const { return oldSegment!=nullptr; }
   bool isActive() const { return stop>start; }
+  unsigned width() const { return stop-start; }
+  unsigned height() const { return stopY-startY; }
+  unsigned length() const { return width()*height(); }
+  unsigned groupLength() const { return grouping+spacing; }
+  unsigned virtualWidth() const;
+  unsigned virtualHeight() const;
+  unsigned virtualLength() const { unsigned n=(width()+groupLength()-1)/groupLength(); return mirror ? (n+1)/2 : n; }
+  uint8_t currentBri() const { return on ? opacity : 0; }
+  uint8_t currentCCT() const { return cct; }
+  unsigned progress() const { return oldSegment ? transitionProgress : 65535; }
+  const Segment* getOldSegment() const { return oldSegment; }
+  uint32_t getPixelColorRaw(unsigned n) const { return n<8 ? pixels[n] : 0; }
+  static void setClippingRect(int x0, int x1, int y0=0, int y1=1) { clipStartX=x0; clipStopX=x1; clipStartY=y0; clipStopY=y1; }
+  bool isPixelXYClipped(int x, int y) const {
+    return clipStopX!=clipStartX && (x<clipStartX || x>=clipStopX || y<clipStartY || y>=clipStopY);
+  }
+  bool isPixelClipped(int x) const { return isPixelXYClipped(x,0); }
   void refreshLightCapabilities() const;
 };
 class WS2812FX {
 public:
   bool cctFromRgb=false, correctWB=false;
-  uint32_t _pixels[8]={};
+  bool isMatrix=false;
+  uint32_t _pixelStorage[8]={};
+  uint32_t* _pixels=_pixelStorage;
   void paintFrame();
+  void blendSegment(const Segment&) const;
+  void setPixelColor(unsigned, uint32_t) const;
   size_t length=8, _pixelCCTSize=0;
   uint8_t* _pixelCCT=nullptr;
+  static constexpr size_t WHITE_PROFILE_COUNT=RGBW_MODE_MAX+1;
+  uint32_t* _pixelWhites[WHITE_PROFILE_COUNT]={};
+  size_t _pixelWhitesSize=0;
   unsigned _length=8;
   bool _hasWhiteChannel=false, _isOffRefreshRequired=false;
   std::vector<Segment> _segments;
   uint8_t _mainSegment=0;
   const Segment& getMainSegment() const { return _segments[_mainSegment]; }
   ~WS2812FX() { releaseCCT(); }
-  void releaseCCT() { p_free(_pixelCCT); _pixelCCT=nullptr; _pixelCCTSize=0; }
+  void releaseCCT() {
+    p_free(_pixelCCT); _pixelCCT=nullptr; _pixelCCTSize=0;
+    for (auto &p : _pixelWhites) { p_free(p); p=nullptr; }
+    _pixelWhitesSize=0;
+  }
   size_t getLengthTotal() const { return length; }
   bool updateCCTBuffer();
-  void blendPixelCCT(size_t, uint32_t, uint8_t, uint8_t, uint8_t) const;
+  bool updateWhiteBuffers();
+  void getLayerWhites(uint32_t, uint8_t, uint32_t*) const;
+  void paintPixel(size_t, uint32_t) const;
+  void blendPixelCCT(size_t, uint32_t, uint8_t, uint8_t, uint8_t, const uint32_t* = nullptr) const;
   void finishFrame();
   bool hasCCTBus() const;
   bool hasRGBWBus() const;

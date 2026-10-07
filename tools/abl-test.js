@@ -33,12 +33,13 @@ it('digital pixel readback and automatic brightness limiter regressions', t => {
   const header = read('bus_manager.h');
   const wrapper = read('bus_wrapper.h');
   const colors = read('colors.cpp');
+  const colorHeader = read('colors.h');
   const constants = read('const.h');
   const fx = read('FX_fcn.cpp');
   const fxHeader = read('FX.h');
 
   const defines = [constants, wrapper, fxHeader].flatMap(source => source.split('\n').filter(line =>
-    /^#define (?:TYPE_\w+|RGBW_MODE_\w+|AW_GLOBAL_DISABLED|COL_ORDER_\w+|I_\w+|SEG_CAPABILITY_\w+|REALTIME_MODE_\w+|REALTIME_OVERRIDE_\w+)\s/.test(line)
+    /^#define (?:TYPE_\w+|RGBW_MODE_\w+|AW_GLOBAL_DISABLED|COL_ORDER_\w+|I_\w+|SEG_CAPABILITY_\w+|REALTIME_MODE_\w+|REALTIME_OVERRIDE_\w+|TRANSITION_\w+)\s/.test(line)
   )).join('\n');
   const aliases = [...wrapper.matchAll(/^#define (B_(?:32|HS|SS)_\w+)\s+NeoPixelBus/gm)].map(([, name]) => {
     let color = 'RgbColor';
@@ -65,6 +66,13 @@ it('digital pixel readback and automatic brightness limiter regressions', t => {
     'static inline int16_t  getCCT()', 'static inline void     setCCT(',
     'static inline uint16_t getWhiteBalance()', 'static inline void     setWhiteBalance('
   ].map(signature => extractFunction(header, signature)).join('\n'));
+  fixture = fixture.replace('/* WHITE_MODE */', extractFunction(header, 'inline  uint8_t  getEffectiveAutoWhiteMode() const'));
+  fixture = fixture.replace('/* GAMMA */',
+    extractFunction(colorHeader, 'class NeoGammaWLEDMethod {') + ';\n' +
+    'uint8_t NeoGammaWLEDMethod::gammaT[256];\nuint8_t NeoGammaWLEDMethod::gammaT_inv[256];\n' +
+    extractFunction(colors, 'void NeoGammaWLEDMethod::calcGammaTable(') + '\n' +
+    '#define gamma32(c) NeoGammaWLEDMethod::Correct32(c)\n#define gamma8inv(c) NeoGammaWLEDMethod::rawInverseGamma8(c)\n'
+  );
   fixture = fixture.replace('/* CONSTANTS */', `${defines}\n#define MA_FOR_ESP ${ma[1]}`)
     .replace('/* DRIVER_ALIASES */', aliases)
     .replace('/* CAPABILITIES */', capabilities)
@@ -93,6 +101,17 @@ it('digital pixel readback and automatic brightness limiter regressions', t => {
   source += extractFunction(colors, 'void colorKtoRGB(') + '\n';
   source += extractFunction(colors, 'uint32_t colorBalanceFromKelvin(') + '\n';
   source += extractFunction(colors, 'uint32_t IRAM_ATTR color_fade(') + '\n';
+  source += extractFunction(colors, 'uint32_t WLED_O2_ATTR IRAM_ATTR color_blend(') + '\n';
+  source += extractFunction(colors, 'uint32_t WLED_O2_ATTR color_add(') + '\n';
+  const blendStart = fx.indexOf('static uint8_t _subtract ');
+  const blendEnd = fx.indexOf('// A layer that leaves', blendStart);
+  assert.ok(blendStart >= 0 && blendEnd > blendStart);
+  source += fx.slice(blendStart, blendEnd) + '\n';
+  source += extractFunction(bus, 'void Bus::calculateCCT(uint32_t c, uint8_t &ww, uint8_t &cw, int16_t') + '\n';
+  source += extractFunction(bus, 'uint8_t Bus::getWhiteValue(') + '\n';
+  for (const signature of ['bool WS2812FX::updateWhiteBuffers(', 'void WS2812FX::getLayerWhites(', 'void WS2812FX::paintPixel(']) {
+    source += extractFunction(fx, signature) + '\n';
+  }
   for (const signature of ['void Bus::calculateCCT(', 'uint32_t Bus::autoWhiteCalc(',
     'void BusDigital::estimateCurrent(', 'void BusDigital::applyBriLimit(',
     'void BusManager::setSegmentCCT(', 'void IRAM_ATTR BusManager::setPixelColor(',
@@ -105,6 +124,11 @@ it('digital pixel readback and automatic brightness limiter regressions', t => {
   source += extractFunction(fx, 'bool WS2812FX::hasCCTBus(') + '\n';
   source += extractFunction(fx, 'bool WS2812FX::checkSegmentAlignment(') + '\n';
   source += extractFunction(fx, 'void Segment::refreshLightCapabilities(') + '\n';
+  source += extractFunction(fx, 'unsigned Segment::virtualWidth(') + '\n';
+  source += extractFunction(fx, 'unsigned Segment::virtualHeight(') + '\n';
+  source += extractFunction(fx, 'void WS2812FX::blendSegment(') + '\n';
+  source += extractFunction(fxHeader.slice(fxHeader.indexOf('class WS2812FX {')), 'inline void setPixelColor(unsigned n, uint32_t c) const')
+    .replace('inline void setPixelColor(', 'void WS2812FX::setPixelColor(') + '\n';
   const initializationStart = fx.indexOf('  _length = 0;', fx.indexOf('void WS2812FX::finalizeInit('));
   const initializationEnd = fx.indexOf('  BusManager::initializeABL();', initializationStart);
   assert.ok(initializationStart > 0 && initializationEnd > initializationStart);

@@ -167,6 +167,8 @@ class Bus {
     inline  void     setStart(uint16_t start)                   { _start = start; }
     inline  void     setAutoWhiteMode(uint8_t m)                { if (m < 5) _autoWhiteMode = m; }
     inline  uint8_t  getAutoWhiteMode() const                   { return _autoWhiteMode; }
+    // Unknown modes historically use the brighter calculation; keep profile indices bounded.
+    inline  uint8_t  getEffectiveAutoWhiteMode() const          { return _gAWM < AW_GLOBAL_DISABLED ? _gAWM : (_autoWhiteMode <= RGBW_MODE_MAX ? _autoWhiteMode : RGBW_MODE_AUTO_BRIGHTER); }
     inline  size_t   getNumberOfChannels() const                { return hasWhite() + 3*hasRGB() + hasCCT(); }
     inline  uint16_t getStart() const                           { return _start; }
     inline  uint8_t  getType() const                            { return _type; }
@@ -220,6 +222,8 @@ class Bus {
       #endif
     }
     static void calculateCCT(uint32_t c, uint8_t &ww, uint8_t &cw);
+    static void calculateCCT(uint32_t c, uint8_t &ww, uint8_t &cw, int16_t cctValue);
+    static uint8_t getWhiteValue(uint32_t c, uint8_t mode);
 
   protected:
     uint8_t  _type;

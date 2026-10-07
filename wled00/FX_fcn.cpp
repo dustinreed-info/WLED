@@ -1334,6 +1334,11 @@ void WS2812FX::updatePixelBuffer() {
   p_free(_pixelCCT);
   _pixelCCT = nullptr;
   _pixelCCTSize = 0;
+  for (auto &whites : _pixelWhites) {
+    p_free(whites);
+    whites = nullptr;
+  }
+  _pixelWhitesSize = 0;
   p_free(_pixels); // using realloc on large buffers can cause additional fragmentation instead of reducing it
   // use PSRAM if available: there is no measurable perfomance impact between PSRAM and DRAM on S2/S3 with QSPI PSRAM for this buffer
   _pixels = static_cast<uint32_t*>(allocate_buffer(requiredMem, BFRALLOC_ENFORCE_PSRAM | BFRALLOC_NOBYTEACCESS | BFRALLOC_CLEAR));
@@ -1371,6 +1376,93 @@ bool WS2812FX::updateCCTBuffer() {
   }
   memset(_pixelCCT, defaultCCT, length);
   return true;
+}
+
+// Cache one packed WW/CW/carrier buffer per effective white profile. Disjoint
+// layers, RGB-derived CCT and full-strip streaming retain the smaller legacy path.
+bool WS2812FX::updateWhiteBuffers() {
+  const size_t length = getLengthTotal();
+  bool profiles[WHITE_PROFILE_COUNT] = {};
+  bool overlapping = false;
+  if (!cctFromRgb && (realtimeMode == REALTIME_MODE_INACTIVE || useMainSegmentOnly || realtimeOverride)) {
+    for (size_t i = 0; i < _segments.size() && !overlapping; i++) {
+      const Segment &a = _segments[i];
+      if (!a.isActive() || (!a.on && !a.isInTransition())) continue;
+      overlapping = a.getOldSegment() != nullptr;
+      for (size_t j = i + 1; j < _segments.size() && !overlapping; j++) {
+        const Segment &b = _segments[j];
+        if (!b.isActive() || (!b.on && !b.isInTransition())) continue;
+        overlapping = a.start < b.stop && b.start < a.stop && a.startY < b.stopY && b.startY < a.stopY;
+      }
+    }
+    if (overlapping) for (size_t i = 0; i < BusManager::getNumBusses(); i++) {
+      const Bus *bus = BusManager::getBus(i);
+      if (bus && bus->isOk() && bus->supportsNativeCCT()) profiles[bus->getEffectiveAutoWhiteMode()] = true;
+    }
+  }
+  bool needed = false;
+  if (length != _pixelWhitesSize) {
+    for (auto &whites : _pixelWhites) {
+      p_free(whites);
+      whites = nullptr;
+    }
+    _pixelWhitesSize = length;
+  }
+  for (size_t mode = 0; mode < WHITE_PROFILE_COUNT; mode++) {
+    if (!profiles[mode]) {
+      p_free(_pixelWhites[mode]);
+      _pixelWhites[mode] = nullptr;
+    }
+    if (!profiles[mode] || length == 0) continue;
+    needed = true;
+    if (!_pixelWhites[mode]) {
+      _pixelWhites[mode] = static_cast<uint32_t*>(allocate_buffer(length * sizeof(uint32_t), BFRALLOC_ENFORCE_PSRAM | BFRALLOC_NOBYTEACCESS));
+      if (!_pixelWhites[mode]) {
+        errorFlag = ERR_NORAM_PX;
+        return false;
+      }
+    }
+    memset(_pixelWhites[mode], 0, length * sizeof(uint32_t));
+  }
+  _pixelWhitesSize = needed ? length : 0;
+  return true;
+}
+
+// The carrier tracks pre-gamma white intensity independently of both emitters.
+void WS2812FX::getLayerWhites(uint32_t color, uint8_t cct, uint32_t *whites) const {
+  for (size_t mode = 0; mode < WHITE_PROFILE_COUNT; mode++) if (_pixelWhites[mode]) {
+    const uint8_t w = Bus::getWhiteValue(color, mode);
+    uint8_t ww = 0, cw = 0;
+    Bus::calculateCCT(RGBW32(R(color), G(color), B(color), w), ww, cw, cct);
+    whites[mode] = RGBW32(ww, cw, w, 0);
+  }
+}
+
+// Preserve the existing final white extraction/gamma intensity while emitting
+// the spectrum blended from all layers. Each bus is painted exactly once for ABL.
+void WS2812FX::paintPixel(size_t pixel, uint32_t color) const {
+  const unsigned mapped = getMappedPixelIndex(pixel);
+  if (!_pixelWhitesSize) {
+    BusManager::setPixelColor(mapped, color);
+    return;
+  }
+  for (size_t i = 0; i < BusManager::getNumBusses(); i++) {
+    Bus *bus = BusManager::getBus(i);
+    if (!bus || !bus->containsPixel(mapped)) continue;
+    const auto *whites = _pixelWhites[bus->getEffectiveAutoWhiteMode()];
+    const uint32_t spectrum = whites ? whites[pixel] : 0;
+    const unsigned carrier = B(spectrum);
+    if (bus->supportsNativeCCT() && spectrum != UINT32_MAX && carrier) {
+      const unsigned w = Bus::getWhiteValue(color, bus->getEffectiveAutoWhiteMode());
+      const unsigned ww = std::min(255U, R(spectrum) * w / carrier);
+      const unsigned cw = std::min(255U, G(spectrum) * w / carrier);
+      bus->setPixelColorCCT(mapped - bus->getStart(), color, (cw << 8) | ww);
+    } else {
+      // No contributing white (e.g. RGB primaries become gray only after mixing),
+      // or a callback replaced this pixel: use the ordinary segment-CCT route.
+      bus->setPixelColor(mapped - bus->getStart(), color);
+    }
+  }
 }
 
 void WS2812FX::service() {
@@ -1444,9 +1536,6 @@ void WS2812FX::service() {
 }
 
 // https://en.wikipedia.org/wiki/Blend_modes but using a for top layer & b for bottom layer
-static uint8_t _top       (uint8_t a, uint8_t b) { return a; } // function unused
-static uint8_t _bottom    (uint8_t a, uint8_t b) { return b; } // function unused
-static uint8_t _add       (uint8_t a, uint8_t b) { unsigned t = a + b; return t > 255 ? 255 : t; } // function unused
 static uint8_t _subtract  (uint8_t a, uint8_t b) { return b > a ? (b - a) : 0; }
 static uint8_t _difference(uint8_t a, uint8_t b) { return b > a ? (b - a) : (a - b); }
 static uint8_t _average   (uint8_t a, uint8_t b) { return (a + b) >> 1; }
@@ -1468,45 +1557,56 @@ static uint8_t _softlight (uint8_t a, uint8_t b) { return (b * b * (255 - 2 * a)
 #endif
 static uint8_t _dodge     (uint8_t a, uint8_t b) { return _divide(~a,b); }
 static uint8_t _burn      (uint8_t a, uint8_t b) { return ~_divide(a,~b); }
-static uint8_t _stencil   (uint8_t a, uint8_t b) { return a ? a : b; } // function unused
 static uint8_t _dummy     (uint8_t a, uint8_t b) { return a; } // dummy (same as _top) to fill the function list and make it safe from OOB access
 
 #define BLENDMODES  17 // number of blend modes must match "bm" in index.js, all cases must be handled in segblend() @ blendSegment()
 
-// A layer that leaves the underlying color untouched must also retain its CCT.
-void WLED_O2_ATTR WS2812FX::blendPixelCCT(size_t pixel, uint32_t color, uint8_t opacity, uint8_t mode, uint8_t cct) const {
-  constexpr uint8_t BOTTOM_MODE = 1;
-  constexpr uint8_t STENCIL_MODE = 16;
-  if (!_pixelCCT || opacity == 0 || mode == BOTTOM_MODE || (mode == STENCIL_MODE && color == BLACK)) return;
-  _pixelCCT[pixel] = cct;
-}
-
-void WS2812FX::blendSegment(const Segment &topSegment) const {
+// Shared layer operators for RGBW colors and packed native white contributions.
+static uint32_t blendLayerColor(uint32_t t, uint32_t b, size_t blendMode) {
   typedef uint8_t(*FuncType)(uint8_t, uint8_t);
-  // function pointer array: fill with _dummy if using special case: avoid OOB access and always provide a valid path
-  // note: making the function array static const uses more ram and comes at no significant speed gain
-  FuncType funcs[] = {
+  static const FuncType funcs[] = {
     _dummy,      _dummy,     _dummy,    _subtract,
     _difference, _average,   _dummy,    _divide,
     _lighten,    _darken,    _screen,   _overlay,
     _hardlight,  _softlight, _dodge,    _burn,
     _dummy
   };
+  // use direct calculations/returns for simple/frequent modes (faster)
+  switch (blendMode) {
+    case 0 : return t;                   // top
+    case 1 : return b;                   // bottom
+    case 2 : return color_add(t,b,true); // add with preserve color ratio to avoid color clipping
+    case 6 : return RGBW32(_multiply(R(t),R(b)), _multiply(G(t),G(b)), _multiply(B(t),B(b)), _multiply(W(t),W(b))); // multiply (7% faster than lambda at 100bytes flash cost)
+    case 16: return t ? t : b;           // stencil (use top layer if not black, else bottom)
+  }
+  // default: use function pointer from array
+  const auto func = funcs[blendMode];
+  return RGBW32(func(R(t),R(b)), func(G(t),G(b)), func(B(t),B(b)), func(W(t),W(b)));
+}
 
-  const size_t blendMode = topSegment.blendMode < BLENDMODES ? topSegment.blendMode : 0; // default to top if unsupported mode
-  const auto segblend = [&](uint32_t t, uint32_t b){
-    // use direct calculations/returns for simple/frequent modes (faster)
-    switch (blendMode) {
-      case 0 : return t;                   // top
-      case 1 : return b;                   // bottom
-      case 2 : return color_add(t,b,true); // add with preserve color ratio to avoid color clipping
-      case 6 : return RGBW32(_multiply(R(t),R(b)), _multiply(G(t),G(b)), _multiply(B(t),B(b)), _multiply(W(t),W(b))); // multiply (7% faster than lambda at 100bytes flash cost)
-      case 16: return t ? t : b;           // stencil (use top layer if not black, else bottom)
-    }
-    // default: use function pointer from array
-    const auto func = funcs[blendMode];
-    return RGBW32(func(R(t),R(b)), func(G(t),G(b)), func(B(t),B(b)), func(W(t),W(b)));
-  };
+// A layer that leaves the underlying color untouched must also retain its CCT.
+void WLED_O2_ATTR WS2812FX::blendPixelCCT(size_t pixel, uint32_t color, uint8_t opacity, uint8_t mode, uint8_t cct, const uint32_t *whites) const {
+  constexpr uint8_t BOTTOM_MODE = 1;
+  constexpr uint8_t STENCIL_MODE = 16;
+  if (!_pixelCCT || opacity == 0 || mode == BOTTOM_MODE || (mode == STENCIL_MODE && color == BLACK)) return;
+  _pixelCCT[pixel] = cct;
+  if (!_pixelWhitesSize) return;
+  uint32_t layer[WHITE_PROFILE_COUNT] = {};
+  if (!whites) {
+    getLayerWhites(color, cct, layer);
+    whites = layer;
+  }
+  for (size_t profile = 0; profile < WHITE_PROFILE_COUNT; profile++) if (_pixelWhites[profile]) {
+    uint32_t &bottom = _pixelWhites[profile][pixel];
+    // Stencil selects using the original full color, including RGB-only layers.
+    const uint32_t top = mode == STENCIL_MODE ? whites[profile] : blendLayerColor(whites[profile], bottom, mode < BLENDMODES ? mode : 0);
+    bottom = color_blend(bottom, top, opacity);
+  }
+}
+
+void WS2812FX::blendSegment(const Segment &topSegment) const {
+  const size_t blendMode = topSegment.blendMode < BLENDMODES ? topSegment.blendMode : 0;
+  const auto segblend = [&](uint32_t t, uint32_t b) { return blendLayerColor(t, b, blendMode); };
 
   const int     length     = topSegment.length();     // physical segment length (counts all pixels in 2D segment)
   const int     width      = topSegment.width();
@@ -1644,12 +1744,12 @@ void WS2812FX::blendSegment(const Segment &topSegment) const {
     const int oCols = segO ? segO->virtualWidth() : nCols;
     const int oRows = segO ? segO->virtualHeight() : nRows;
 
-    const auto setMirroredPixel = [&](int x, int y, uint32_t c, uint8_t o) {
+    const auto setMirroredPixel = [&](int x, int y, uint32_t c, uint8_t o, const uint32_t *whites) {
       const int baseX = topSegment.start  + x;
       const int baseY = topSegment.startY + y;
       size_t indx = XY(baseX, baseY); // absolute address on strip
       _pixels[indx] = color_blend(_pixels[indx], segblend(c, _pixels[indx]), o);
-      blendPixelCCT(indx, c, o, blendMode, cct);
+      blendPixelCCT(indx, c, o, blendMode, cct, whites);
       // Apply mirroring if enabled
       if (topSegment.mirror || topSegment.mirror_y) {
         const int mirrorX = topSegment.start  + width  - x - 1;
@@ -1661,9 +1761,9 @@ void WS2812FX::blendSegment(const Segment &topSegment) const {
         if (topSegment.mirror_y)                      _pixels[idxMY] = color_blend(_pixels[idxMY], segblend(c, _pixels[idxMY]), o);
         if (topSegment.mirror && topSegment.mirror_y) _pixels[idxMM] = color_blend(_pixels[idxMM], segblend(c, _pixels[idxMM]), o);
         if (_pixelCCT) {
-          if (topSegment.mirror)                        blendPixelCCT(idxMX, c, o, blendMode, cct);
-          if (topSegment.mirror_y)                      blendPixelCCT(idxMY, c, o, blendMode, cct);
-          if (topSegment.mirror && topSegment.mirror_y) blendPixelCCT(idxMM, c, o, blendMode, cct);
+          if (topSegment.mirror)                        blendPixelCCT(idxMX, c, o, blendMode, cct, whites);
+          if (topSegment.mirror_y)                      blendPixelCCT(idxMY, c, o, blendMode, cct, whites);
+          if (topSegment.mirror && topSegment.mirror_y) blendPixelCCT(idxMM, c, o, blendMode, cct, whites);
         }
       }
     };
@@ -1698,11 +1798,23 @@ void WS2812FX::blendSegment(const Segment &topSegment) const {
       if (pushOffsetY != 0) y = (y + pushOffsetY) % nRows;
       uint32_t c_a = BLACK;
       if (x < vCols && y < vRows) c_a = seg->getPixelColorRaw(x + y*vCols); // will get clipped pixel from old segment or unclipped pixel from new segment
+      uint32_t whites[WHITE_PROFILE_COUNT] = {};
+      const uint8_t layerCCT = seg == segO ? segO->currentCCT() : cct;
+      if (_pixelWhitesSize) getLayerWhites(c_a, layerCCT, whites);
       if (segO && blendingStyle == TRANSITION_FADE
         && (topSegment.mode != segO->mode || (segO->name != topSegment.name && segO->name && topSegment.name && strncmp(segO->name, topSegment.name, WLED_MAX_SEGNAME_LEN) != 0))
         && x < oCols && y < oRows) {
         // we need to blend old segment using fade as pixels are not clipped
-        c_a = color_blend16(c_a, segO->getPixelColorRaw(x + y*oCols), progInv);
+        const uint32_t oldColor = segO->getPixelColorRaw(x + y*oCols);
+        if (_pixelWhitesSize) {
+          getLayerWhites(c_a, topSegment.cct, whites);
+          uint32_t oldWhites[WHITE_PROFILE_COUNT] = {};
+          getLayerWhites(oldColor, segO->currentCCT(), oldWhites);
+          for (size_t profile = 0; profile < WHITE_PROFILE_COUNT; profile++) if (_pixelWhites[profile]) {
+            whites[profile] = color_blend16(whites[profile], oldWhites[profile], progInv);
+          }
+        }
+        c_a = color_blend16(c_a, oldColor, progInv);
       } else if (blendingStyle != TRANSITION_FADE) {
         // if we have global brightness change (not On/Off change) we will ignore transition style and just fade brightness (see led.cpp)
         // workaround for On/Off transition
@@ -1710,7 +1822,10 @@ void WS2812FX::blendSegment(const Segment &topSegment) const {
         // (bri != briT) &&  bri => from Off to On
         // note: only blank pixels once the segment transition has actually started; bri changes before
         // startTransition() is called (stateUpdated()) and a frame rendered in that window would blank the whole segment
-        if (topSegment.isInTransition() && (briOld == 0 || bri == 0) && ((!clipped && (bri != briT) && !bri) || (clipped && (bri != briT) && bri))) c_a = BLACK;
+        if (topSegment.isInTransition() && (briOld == 0 || bri == 0) && ((!clipped && (bri != briT) && !bri) || (clipped && (bri != briT) && bri))) {
+          c_a = BLACK;
+          memset(whites, 0, sizeof(whites));
+        }
       }
       // map it into frame buffer
       x = c;  // restore coordiates if we were PUSHing
@@ -1722,7 +1837,7 @@ void WS2812FX::blendSegment(const Segment &topSegment) const {
       }
       // expand pixel
       if (groupLen == 1) {
-        setMirroredPixel(x, y, c_a, opacity);
+        setMirroredPixel(x, y, c_a, opacity, whites);
       } else {
         // handle grouping and spacing
         x *= groupLen; // expand to physical pixels
@@ -1731,7 +1846,7 @@ void WS2812FX::blendSegment(const Segment &topSegment) const {
         const int maxY = std::min(y + topSegment.grouping, height);
         while (y < maxY) {
           int _x = x;
-          while (_x < maxX) setMirroredPixel(_x++, y, c_a, opacity);
+          while (_x < maxX) setMirroredPixel(_x++, y, c_a, opacity, whites);
           y++;
         }
       }
@@ -1742,7 +1857,7 @@ void WS2812FX::blendSegment(const Segment &topSegment) const {
     const int nLen = topSegment.virtualLength();
     const int oLen = segO ? segO->virtualLength() : nLen;
 
-    const auto setMirroredPixel = [&](int i, uint32_t c, uint8_t o) {
+    const auto setMirroredPixel = [&](int i, uint32_t c, uint8_t o, const uint32_t *whites) {
       int indx = topSegment.start + i;
       // Apply mirroring
       if (topSegment.mirror) {
@@ -1750,12 +1865,12 @@ void WS2812FX::blendSegment(const Segment &topSegment) const {
         indxM += topSegment.offset; // offset/phase
         if (indxM >= topSegment.stop) indxM -= length; // wrap
         _pixels[indxM] = color_blend(_pixels[indxM], segblend(c, _pixels[indxM]), o);
-        blendPixelCCT(indxM, c, o, blendMode, cct);
+        blendPixelCCT(indxM, c, o, blendMode, cct, whites);
       }
       indx += topSegment.offset; // offset/phase
       if (indx >= topSegment.stop) indx -= length; // wrap
       _pixels[indx] = color_blend(_pixels[indx], segblend(c, _pixels[indx]), o);
-      blendPixelCCT(indx, c, o, blendMode, cct);
+      blendPixelCCT(indx, c, o, blendMode, cct, whites);
     };
 
     // if we blend using "push" style we need to "shift" canvas to left/right/
@@ -1774,9 +1889,21 @@ void WS2812FX::blendSegment(const Segment &topSegment) const {
       }
       uint32_t c_a = BLACK;
       if (i < vLen) c_a = seg->getPixelColorRaw(i); // will get clipped pixel from old segment or unclipped pixel from new segment
+      uint32_t whites[WHITE_PROFILE_COUNT] = {};
+      const uint8_t layerCCT = seg == segO ? segO->currentCCT() : cct;
+      if (_pixelWhitesSize) getLayerWhites(c_a, layerCCT, whites);
       if (segO && blendingStyle == TRANSITION_FADE && topSegment.mode != segO->mode && i < oLen) {
         // we need to blend old segment using fade as pixels are not clipped
-        c_a = color_blend16(c_a, segO->getPixelColorRaw(i), progInv);
+        const uint32_t oldColor = segO->getPixelColorRaw(i);
+        if (_pixelWhitesSize) {
+          getLayerWhites(c_a, topSegment.cct, whites);
+          uint32_t oldWhites[WHITE_PROFILE_COUNT] = {};
+          getLayerWhites(oldColor, segO->currentCCT(), oldWhites);
+          for (size_t profile = 0; profile < WHITE_PROFILE_COUNT; profile++) if (_pixelWhites[profile]) {
+            whites[profile] = color_blend16(whites[profile], oldWhites[profile], progInv);
+          }
+        }
+        c_a = color_blend16(c_a, oldColor, progInv);
       } else if (blendingStyle != TRANSITION_FADE) {
         // if we have global brightness change (not On/Off change) we will ignore transition style and just fade brightness (see led.cpp)
         // workaround for On/Off transition
@@ -1784,7 +1911,10 @@ void WS2812FX::blendSegment(const Segment &topSegment) const {
         // (bri != briT) &&  bri => from Off to On
         // note: only blank pixels once the segment transition has actually started; bri changes before
         // startTransition() is called (stateUpdated()) and a frame rendered in that window would blank the whole segment
-        if (topSegment.isInTransition() && (briOld == 0 || bri == 0) && ((!clipped && (bri != briT) && !bri) || (clipped && (bri != briT) && bri))) c_a = BLACK;
+        if (topSegment.isInTransition() && (briOld == 0 || bri == 0) && ((!clipped && (bri != briT) && !bri) || (clipped && (bri != briT) && bri))) {
+          c_a = BLACK;
+          memset(whites, 0, sizeof(whites));
+        }
       }
       // map into frame buffer
       i = k; // restore index if we were PUSHing
@@ -1793,7 +1923,7 @@ void WS2812FX::blendSegment(const Segment &topSegment) const {
       i *= topSegment.groupLength();
       // set all the pixels in the group
       const int maxI = std::min(i + topSegment.grouping, length); // make sure to not go beyond physical length
-      while (i < maxI) setMirroredPixel(i++, c_a, opacity);
+      while (i < maxI) setMirroredPixel(i++, c_a, opacity, whites);
     }
   }
 
@@ -1812,12 +1942,10 @@ void WS2812FX::show() {
   size_t diff = showNow - _lastShow;
 
   size_t totalLen = getLengthTotal();
-  // WARNING: as WLED doesn't handle CCT on pixel level but on Segment level instead
-  // we need to keep track of each pixel's CCT when blending segments (if CCT is present)
-  // and then set appropriate CCT from that pixel during paint (see below).
+  // Keep RGB tint metadata and, when layers overlap, the composed white spectrum.
   // Keep the last displayed frame on allocation failure rather than repainting
   // it with a temperature inferred from RGB after losing the segment CCT data.
-  if (!updateCCTBuffer()) return;
+  if (!updateCCTBuffer() || !updateWhiteBuffers()) return;
 
   if (realtimeMode == REALTIME_MODE_INACTIVE || useMainSegmentOnly || realtimeOverride > REALTIME_OVERRIDE_NONE) {
     // clear frame buffer
@@ -1849,7 +1977,7 @@ void WS2812FX::show() {
     uint32_t c = _pixels[i]; // need a copy, do not modify _pixels directly (no byte access allowed on ESP32)
     if (c > 0 && useGammaCorrection)
       c = gamma32(c); // apply gamma correction if enabled note: applying gamma after brightness has too much color loss
-    BusManager::setPixelColor(getMappedPixelIndex(i), c);
+    paintPixel(i, c);
   }
   Bus::setCCT(oldCCT);  // restore old CCT for ABL adjustments
   Bus::setWhiteBalance(oldWhiteBalance);

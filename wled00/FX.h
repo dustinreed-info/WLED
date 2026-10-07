@@ -839,6 +839,8 @@ class WS2812FX {
       _pixels(nullptr),
       _pixelCCT(nullptr),
       _pixelCCTSize(0),
+      _pixelWhites{},
+      _pixelWhitesSize(0),
       _suspend(false),
       _brightness(DEFAULT_BRIGHTNESS),
       _length(DEFAULT_LED_COUNT),
@@ -868,6 +870,7 @@ class WS2812FX {
     ~WS2812FX() {
       p_free(_pixels);
       p_free(_pixelCCT); // cached white balance data
+      for (auto *whites : _pixelWhites) p_free(whites);
       d_free(customMappingTable);
       _mode.clear();
       _modeData.clear();
@@ -899,7 +902,12 @@ class WS2812FX {
       waitForIt();                                // wait until frame is over (service() has finished or time for 1 frame has passed)
 
     void setRealtimePixelColor(unsigned i, uint32_t c);
-    inline void setPixelColor(unsigned n, uint32_t c) const   { if (_pixels && n < getLengthTotal()) _pixels[n] = c; }  // paints absolute strip pixel with index n and color c
+    inline void setPixelColor(unsigned n, uint32_t c) const {
+      if (!_pixels || n >= getLengthTotal()) return;
+      _pixels[n] = c;
+      // Overlays replace the composed pixel; discard its previous white spectrum.
+      for (auto *whites : _pixelWhites) if (whites) whites[n] = UINT32_MAX;
+    } // paints absolute strip pixel with index n and color c
     inline void resetTimebase()                               { timebase = 0UL - millis(); }
     inline void setPixelColor(unsigned n, uint8_t r, uint8_t g, uint8_t b, uint8_t w = 0) const
                                                               { setPixelColor(n, RGBW32(r,g,b,w)); }
@@ -1019,8 +1027,14 @@ class WS2812FX {
     uint32_t *_pixels;
     uint8_t  *_pixelCCT;
     size_t    _pixelCCTSize;
+    static constexpr size_t WHITE_PROFILE_COUNT = RGBW_MODE_MAX + 1;
+    uint32_t *_pixelWhites[WHITE_PROFILE_COUNT]; // WW, CW and pre-gamma white magnitude per auto-white profile
+    size_t    _pixelWhitesSize;
     bool updateCCTBuffer();
-    void blendPixelCCT(size_t pixel, uint32_t color, uint8_t opacity, uint8_t mode, uint8_t cct) const;
+    bool updateWhiteBuffers();
+    void getLayerWhites(uint32_t color, uint8_t cct, uint32_t *whites) const;
+    void paintPixel(size_t pixel, uint32_t color) const;
+    void blendPixelCCT(size_t pixel, uint32_t color, uint8_t opacity, uint8_t mode, uint8_t cct, const uint32_t *whites = nullptr) const;
     std::vector<Segment> _segments;
 
     volatile bool _suspend;

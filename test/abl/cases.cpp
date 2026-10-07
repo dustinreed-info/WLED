@@ -14,6 +14,33 @@ static void resetState() {
   strip.cctFromRgb=false; strip.correctWB=false;
   realtimeMode=REALTIME_MODE_INACTIVE; realtimeOverride=REALTIME_OVERRIDE_NONE;
   useMainSegmentOnly=false; strip._mainSegment=0;
+  strip.isMatrix=false; Segment::maxWidth=1; Segment::maxHeight=1;
+  blendingStyle=TRANSITION_FADE; bri=briOld=briT=77;
+  gammaCorrectCol=false;
+  NeoGammaWLEDMethod::calcGammaTable(2.8f);
+  std::fill(strip._pixels,strip._pixels+8,0);
+}
+
+static BusDigital* setupWhiteLayers(uint8_t whiteMode=RGBW_MODE_MANUAL_ONLY) {
+  auto bus=std::make_unique<BusDigital>(8);
+  auto* out=bus.get(); out->_autoWhiteMode=whiteMode;
+  BusManager::busses.push_back(std::move(bus));
+  strip._segments.resize(2);
+  for (auto &seg : strip._segments) {
+    seg.stop=8;
+    for (auto &pixel : seg.pixels) pixel=RGBW32(0,0,0,200);
+  }
+  strip._segments[0].cct=0; strip._segments[1].cct=255;
+  strip._segments[1].opacity=128;
+  CHECK(strip.updateCCTBuffer() && strip.updateWhiteBuffers());
+  return out;
+}
+
+static void renderWhiteLayers() {
+  std::fill(strip._pixels,strip._pixels+8,0);
+  CHECK(strip.updateCCTBuffer() && strip.updateWhiteBuffers());
+  for (const auto &seg : strip._segments) strip.blendSegment(seg);
+  strip.paintFrame();
 }
 
 static void checkColorReadback(uint8_t type) {
@@ -556,6 +583,151 @@ int main() {
     CHECK(!bus.supportsNativeCCT());
     bus.setPixelColorCCT(0,RGBW32(0,0,0,200),uint16_t(100)<<8|200);
     CHECK(bus._data[0]==200 && bus._data[1]==64);
+  }});
+  checks.push_back({"RGB-only translucent layers preserve the underlying cold whites", [] {
+    auto* out=setupWhiteLayers();
+    strip._segments[0].cct=255; strip._segments[1].cct=0;
+    for (auto &c : strip._segments[1].pixels) c=RGBW32(200,0,0,0);
+    renderWhiteLayers();
+    for (const auto &p : out->raw->pixels) CHECK(p.WW==0 && p.CW>=98 && p.CW<=100 && p.R>=100);
+  }});
+  checks.push_back({"warm and cool overlapping layers retain both emitters", [] {
+    auto* out=setupWhiteLayers();
+    for (int8_t blend : {-127,0,63,127}) {
+      Bus::_cctBlend=blend; renderWhiteLayers();
+      for (const auto &p : out->raw->pixels) CHECK(p.WW>=98 && p.WW<=100 && p.CW>=100 && p.CW<=102);
+    }
+  }});
+  checks.push_back({"stencil uses the original RGBW color to select white contributors", [] {
+    auto* out=setupWhiteLayers(); strip._segments[1].blendMode=16;
+    strip._segments[1].opacity=255;
+    for (auto &c : strip._segments[1].pixels) c=BLACK;
+    renderWhiteLayers(); CHECK(out->raw->pixels[0].WW==200 && out->raw->pixels[0].CW==0);
+    for (auto &c : strip._segments[1].pixels) c=RGBW32(200,0,0,0);
+    renderWhiteLayers(); CHECK(out->raw->pixels[0].WW==0 && out->raw->pixels[0].CW==0);
+  }});
+  checks.push_back({"independent emitter multiplication retains a zero white product", [] {
+    auto* out=setupWhiteLayers(); strip._segments[1].blendMode=6; strip._segments[1].opacity=255;
+    renderWhiteLayers(); CHECK(W(strip._pixels[0])>0);
+    CHECK(out->raw->pixels[0].WW==0 && out->raw->pixels[0].CW==0);
+  }});
+  checks.push_back({"grouped reversed mirrored and offset 1D layers use the same white spectrum", [] {
+    auto* out=setupWhiteLayers(); auto &top=strip._segments[1];
+    top.grouping=2; top.mirror=true; top.reverse=true; top.offset=3;
+    renderWhiteLayers();
+    for (const auto &p : out->raw->pixels) CHECK(p.WW>=98 && p.WW<=100 && p.CW>=100 && p.CW<=102);
+  }});
+  checks.push_back({"2D layers preserve whites with transpose reverse and both mirrors", [] {
+    auto* out=setupWhiteLayers(); strip.isMatrix=true; Segment::maxWidth=4; Segment::maxHeight=2;
+    for (auto &seg : strip._segments) { seg.stop=4; seg.stopY=2; }
+    auto &top=strip._segments[1]; top.transpose=true; top.reverse=true; top.reverse_y=true; top.mirror=true; top.mirror_y=true;
+    renderWhiteLayers();
+    for (const auto &p : out->raw->pixels) CHECK(p.WW>=98 && p.WW<=100 && p.CW>=100 && p.CW<=102);
+  }});
+  checks.push_back({"fading old and new segment effects blends their actual white contributors", [] {
+    auto* out=setupWhiteLayers();
+    Segment old=strip._segments[0]; old.mode=1;
+    auto &top=strip._segments[1]; top.oldSegment=&old; top.mode=2; top.opacity=255; top.transitionProgress=32768;
+    renderWhiteLayers();
+    for (const auto &p : out->raw->pixels) CHECK(p.WW>=98 && p.WW<=101 && p.CW>=98 && p.CW<=101);
+  }});
+  checks.push_back({"white profile caches are reused and released when no longer needed", [] {
+    setupWhiteLayers(); unsigned allocations=cctAllocations;
+    for (unsigned frame=0;frame<100;frame++) CHECK(strip.updateWhiteBuffers());
+    CHECK(cctAllocations==allocations && strip._pixelWhites[RGBW_MODE_MANUAL_ONLY]);
+    strip.cctFromRgb=true;
+    CHECK(strip.updateWhiteBuffers() && strip._pixelWhitesSize==0 && !strip._pixelWhites[0]);
+    strip.cctFromRgb=false; realtimeMode=REALTIME_MODE_DDP;
+    CHECK(strip.updateWhiteBuffers() && strip._pixelWhitesSize==0);
+    useMainSegmentOnly=true; CHECK(strip.updateWhiteBuffers() && strip._pixelWhitesSize==8);
+    strip._segments.resize(1); CHECK(strip.updateWhiteBuffers() && !strip._pixelWhites[0]);
+  }});
+  checks.push_back({"white profile allocation failure rejects and recovers without a paint", [] {
+    auto* out=setupWhiteLayers(); renderWhiteLayers();
+    auto before=out->raw->pixels[0]; strip.releaseCCT(); CHECK(strip.updateCCTBuffer());
+    failCCTAllocation=true;
+    CHECK(!strip.updateWhiteBuffers() && errorFlag==ERR_NORAM_PX);
+    CHECK(out->raw->pixels[0].WW==before.WW && out->raw->pixels[0].CW==before.CW);
+    failCCTAllocation=false; renderWhiteLayers();
+    CHECK(out->raw->pixels[0].WW==before.WW && out->raw->pixels[0].CW==before.CW);
+  }});
+  checks.push_back({"overlay writes discard a stale composed white spectrum", [] {
+    auto* out=setupWhiteLayers(); renderWhiteLayers();
+    CHECK(out->raw->pixels[0].WW>0 && out->raw->pixels[0].CW>0);
+    strip.setPixelColor(0,RGBW32(0,0,0,200)); strip.paintFrame();
+    CHECK(out->raw->pixels[0].WW==0 && out->raw->pixels[0].CW==200);
+    CHECK(out->raw->pixels[1].WW>0 && out->raw->pixels[1].CW>0);
+  }});
+  checks.push_back({"gamma preserves final white intensity without brightening the mixed spectrum", [] {
+    auto* out=setupWhiteLayers(); gammaCorrectCol=true;
+    strip._segments[1].opacity=NeoGammaWLEDMethod::rawGamma8(128);
+    for (int8_t blend : {0,63,127}) {
+      Bus::_cctBlend=blend; renderWhiteLayers();
+      unsigned target=NeoGammaWLEDMethod::rawGamma8(200);
+      auto p=out->raw->pixels[0];
+      CHECK(p.WW>0 && p.CW>0 && p.WW+p.CW>=target-2 && p.WW+p.CW<=target);
+    }
+  }});
+  checks.push_back({"mixed WS2805 auto-white profiles and SK6812 retain their own extraction", [] {
+    auto* manual=setupWhiteLayers();
+    for (auto &c : strip._segments[0].pixels) c=RGBW32(100,80,60,200);
+    for (auto &c : strip._segments[1].pixels) c=RGBW32(40,30,20,0);
+    BusDigital* profile[5]={manual};
+    for (uint8_t mode=1;mode<=RGBW_MODE_MAX;mode++) {
+      auto b=std::make_unique<BusDigital>(8); profile[mode]=b.get(); b->_autoWhiteMode=mode;
+      BusManager::busses.push_back(std::move(b));
+    }
+    auto legacy=std::make_unique<BusDigital>(8,0,TYPE_SK6812_RGBW); auto* sk=legacy.get();
+    BusManager::busses.push_back(std::move(legacy)); renderWhiteLayers();
+    CHECK(manual->raw->pixels[0].WW==W(strip._pixels[0]) && manual->raw->pixels[0].CW==0 && sk->raw->pixels[0].W==W(strip._pixels[0]));
+    CHECK(profile[1]->raw->pixels[0].WW>=28 && profile[1]->raw->pixels[0].CW==10);
+    CHECK(profile[2]->raw->pixels[0].B==0 && profile[2]->raw->pixels[0].WW==profile[1]->raw->pixels[0].WW);
+    CHECK(profile[3]->raw->pixels[0].WW>=88 && profile[3]->raw->pixels[0].CW>=8);
+    CHECK(profile[4]->raw->pixels[0].WW>=48 && profile[4]->raw->pixels[0].CW==20);
+    for (auto *p : strip._pixelWhites) CHECK(p);
+    Bus::_gAWM=RGBW_MODE_MANUAL_ONLY; renderWhiteLayers();
+    for (unsigned mode=1;mode<5;mode++) CHECK(!strip._pixelWhites[mode] && profile[mode]->raw->pixels[0].CW==0);
+  }});
+  checks.push_back({"auto-white created only by final RGB mixing uses the legacy CCT spectrum", [] {
+    auto* out=setupWhiteLayers(RGBW_MODE_AUTO_BRIGHTER);
+    for (auto &c : strip._segments[0].pixels) c=RGBW32(200,0,0,0);
+    for (auto &c : strip._segments[1].pixels) c=RGBW32(0,200,200,0);
+    renderWhiteLayers(); CHECK(B(strip._pixelWhites[RGBW_MODE_AUTO_BRIGHTER][0])==0);
+    CHECK(out->raw->pixels[0].WW==0 && out->raw->pixels[0].CW>=98);
+  }});
+  checks.push_back({"disjoint segments and unsupported outputs avoid native white storage", [] {
+    setupWhiteLayers(); strip._segments[0].stop=4; strip._segments[1].start=4;
+    CHECK(strip.updateWhiteBuffers() && strip._pixelWhitesSize==0);
+    strip._segments[0].stop=8; strip._segments[1].start=0;
+    BusManager::busses.clear(); BusManager::busses.push_back(std::make_unique<BusDigital>(8,0,TYPE_SK6812_RGBW));
+    CHECK(strip.updateWhiteBuffers() && strip._pixelWhitesSize==0);
+  }});
+  checks.push_back({"all blend modes keep RGB and RGBW legacy output behavior", [] {
+    auto* out=setupWhiteLayers();
+    auto legacy=std::make_unique<BusDigital>(8,0,TYPE_SK6812_RGBW); auto* sk=legacy.get();
+    BusManager::busses.push_back(std::move(legacy));
+    for (auto &c : strip._segments[0].pixels) c=RGBW32(130,80,20,200);
+    for (auto &c : strip._segments[1].pixels) c=RGBW32(40,90,60,160);
+    for (uint8_t mode=0;mode<17;mode++) {
+      strip._segments[1].blendMode=mode; renderWhiteLayers();
+      const auto &p=out->raw->pixels[0], &q=sk->raw->pixels[0];
+      CHECK(p.R==q.R && p.G==q.G && p.B==q.B && q.W==W(strip._pixels[0]));
+      CHECK(p.WW<=255 && p.CW<=255);
+    }
+  }});
+  checks.push_back({"native composition is counted once and keeps its spectrum under ABL", [] {
+    auto* out=setupWhiteLayers(); renderWhiteLayers();
+    CHECK(out->_colorSum==8*(99+101)); out->applyBriLimit(128);
+    for (const auto &p : out->raw->pixels) CHECK(p.WW>=49 && p.WW<=50 && p.CW>=50 && p.CW<=51);
+  }});
+  checks.push_back({"unknown persisted white modes retain brighter extraction with bounded profiles", [] {
+    auto* out=setupWhiteLayers(); out->_autoWhiteMode=255;
+    for (auto &seg : strip._segments) for (auto &c : seg.pixels) c=RGBW32(100,60,20,0);
+    renderWhiteLayers();
+    CHECK(strip._pixelWhites[RGBW_MODE_AUTO_BRIGHTER] && out->getEffectiveAutoWhiteMode()==RGBW_MODE_AUTO_BRIGHTER);
+    CHECK(out->raw->pixels[0].WW+out->raw->pixels[0].CW>=18 && out->raw->pixels[0].WW+out->raw->pixels[0].CW<=20);
+    out->_autoWhiteMode=5; renderWhiteLayers();
+    CHECK(out->getEffectiveAutoWhiteMode()==RGBW_MODE_AUTO_BRIGHTER);
   }});
   unsigned failures=0;
   for (const auto& check : checks) {
