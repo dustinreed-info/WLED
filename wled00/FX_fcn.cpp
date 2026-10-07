@@ -1880,7 +1880,7 @@ uint32_t WS2812FX::getRealtimePixelColor(unsigned i) const {
     const Segment &seg = getMainSegment();
     return seg.isActive() && i < seg.length() ? seg.getPixelColorRaw(i) : BLACK;
   }
-  return _pixels && i < getLengthTotal() ? _pixels[i] : BLACK;
+  return getPixelColorNoMap(i);
 }
 
 // reset all segments

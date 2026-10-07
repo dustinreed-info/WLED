@@ -1,6 +1,6 @@
 #define CHECK(x) do { if (!(x)) throw std::runtime_error(#x); } while(0)
 static void reset() {
-  strip=Strip{}; Serial.input.clear();
+  strip=Strip{}; Serial.input.clear(); realtimeRespectLedMaps=true;
   realtimeOverride=0; realtimeMode=0; realtimeTimeout=0;
   useMainSegmentOnly=false; arlsOffset=0; DMXAddress=1;
   e131NewData=false; std::fill(std::begin(e131LastSequenceNumber),std::end(e131LastSequenceNumber),0);
@@ -17,6 +17,7 @@ static e131_packet_t packet(uint32_t offset, bool white, const std::vector<byte>
   return p;
 }
 int main() {
+  std::cout<<std::unitbuf;
   std::vector<std::pair<std::string,std::function<void()>>> cases;
   cases.push_back({"ordinary DDP RGBW retains all four channels", [] {
     auto p=packet(0,true,{11,22,33,44,55,66,77,88});
@@ -51,7 +52,7 @@ int main() {
     CHECK(strip.shows==1 && strip.shown[0]==RGBW32(11,22,33,0));
   }});
   cases.push_back({"TPM2 byte length carries correctly across the high byte", [] {
-    realtimeMode=REALTIME_MODE_ADALIGHT; strip.colors.resize(100); strip.shown.resize(100);
+    realtimeMode=REALTIME_MODE_ADALIGHT; strip.resizePixels(100);
     std::vector<byte> bytes={0xC9,0xDA,0x01,0x2C};
     for (unsigned i=0;i<100;i++) { bytes.push_back(i+1); bytes.push_back(22); bytes.push_back(33); }
     bytes.push_back(0x36); feed(bytes);
@@ -214,6 +215,29 @@ int main() {
       realtimeMode=REALTIME_MODE_DDP; realtimeTimeout=0; fakeTime=now;
       checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_INACTIVE);
     }
+  }});
+  cases.push_back({"mapped pixel readback preserves logical coordinates and masking", [] {
+    strip.colors[0]=RGBW32(11,22,33,44); strip.colors[1]=RGBW32(55,66,77,88);
+    uint16_t mapping[]={7,UINT16_MAX};
+    strip.customMappingSize=2; strip.customMappingTable=mapping;
+    CHECK(strip.getPixelColor(0)==strip.colors[0] && strip.getPixelColor(1)==0);
+    CHECK(strip.getPixelColorNoMap(1)==strip.colors[1]);
+    realtimeMode=REALTIME_MODE_DDP; realtimeRespectLedMaps=false;
+    CHECK(strip.getPixelColor(1)==strip.colors[1]);
+  }});
+  cases.push_back({"pixel readback clips before narrowing mapped indices", [] {
+    CHECK(strip.getPixelColor(65536)==0 && strip.getPixelColor(UINT32_MAX)==0);
+    CHECK(strip.getPixelColorNoMap(65536)==0);
+  }});
+  cases.push_back({"missing canvas storage cannot crash realtime takeover and writes", [] {
+    std::cout<<"CHECK missing canvas storage\n";
+    strip._pixels=nullptr;
+    CHECK(strip.getPixelColor(0)==0 && strip.getPixelColorNoMap(0)==0);
+    strip.fill(BLACK); setRealtimePixel(0,11,22,33,44);
+    auto p=packet(0,true,{11,22,33,44}); handleDDPPacket(&p,DDP_HEADER_LEN+4);
+    CHECK(realtimeMode==REALTIME_MODE_DDP);
+    p=packet(3,true,{99}); handleDDPPacket(&p,DDP_HEADER_LEN+1);
+    CHECK(strip.colors[0]==0);
   }});
   unsigned failures=0;
   for (const auto& entry : cases) {

@@ -899,12 +899,12 @@ class WS2812FX {
       waitForIt();                                // wait until frame is over (service() has finished or time for 1 frame has passed)
 
     void setRealtimePixelColor(unsigned i, uint32_t c);
-    inline void setPixelColor(unsigned n, uint32_t c) const   { if (n < getLengthTotal()) _pixels[n] = c; }  // paints absolute strip pixel with index n and color c
+    inline void setPixelColor(unsigned n, uint32_t c) const   { if (_pixels && n < getLengthTotal()) _pixels[n] = c; }  // paints absolute strip pixel with index n and color c
     inline void resetTimebase()                               { timebase = 0UL - millis(); }
     inline void setPixelColor(unsigned n, uint8_t r, uint8_t g, uint8_t b, uint8_t w = 0) const
                                                               { setPixelColor(n, RGBW32(r,g,b,w)); }
     inline void setPixelColor(unsigned n, CRGB c) const       { setPixelColor(n, c.red, c.green, c.blue); }
-    inline void fill(uint32_t c) const                        { for (size_t i = 0; i < getLengthTotal(); i++) setPixelColor(i, c); } // fill whole strip with color (inline)
+    inline void fill(uint32_t c) const                        { if (!_pixels) return; for (size_t i = 0; i < getLengthTotal(); i++) setPixelColor(i, c); } // fill whole strip with color (inline)
     inline void trigger()                                     { _triggered = true; }  // Forces the next frame to be computed on all active segments.
     inline void setShowCallback(show_callback cb)             { _callback = cb; }
     inline void setTransition(uint16_t t)                     { _transitionDur = t; } // sets transition time (in ms)
@@ -957,9 +957,9 @@ class WS2812FX {
     };
 
     unsigned long now, timebase;
-    inline uint32_t getPixelColor(unsigned n) const { return (getMappedPixelIndex(n) < getLengthTotal()) ? _pixels[n] : 0; } // returns color of pixel n, black if out of (mapped) bounds
+    inline uint32_t getPixelColor(unsigned n) const { return (_pixels && n < getLengthTotal() && getMappedPixelIndex(n) < getLengthTotal()) ? _pixels[n] : 0; } // black if storage is unavailable or out of (mapped) bounds
     uint32_t getRealtimePixelColor(unsigned i) const;
-    inline uint32_t getPixelColorNoMap(unsigned n) const { return (n < getLengthTotal()) ? _pixels[n] : 0; } // ignores mapping table
+    inline uint32_t getPixelColorNoMap(unsigned n) const { return (_pixels && n < getLengthTotal()) ? _pixels[n] : 0; } // ignores mapping table
     inline uint32_t getLastShow() const             { return _lastShow; }                 // returns millis() timestamp of last strip.show() call
 
     const char *getModeData(unsigned id = 0) const  { return (id && id < _modeCount) ? _modeData[id] : PSTR("Solid"); }
