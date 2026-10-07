@@ -80,11 +80,22 @@ void handleSerial()
   static byte check = 0x00;
   static byte red   = 0x00;
   static byte green = 0x00;
+  static uint32_t lastByteTime = 0;
+  constexpr uint32_t SERIAL_FRAME_IDLE_TIMEOUT_MS = 1000;
+
+  // An interrupted frame must not consume the next connection's header as RGB.
+  // Use inactivity rather than total duration so large slow frames remain valid.
+  if (state != AdaState::Header_A && millis() - lastByteTime > SERIAL_FRAME_IDLE_TIMEOUT_MS) {
+    state = AdaState::Header_A;
+    count = 0;
+    pixel = 0;
+  }
 
   while (Serial.available() > 0)
   {
     yield();
     byte next = Serial.peek();
+    lastByteTime = millis();
     switch (state) {
       case AdaState::Header_A:
         if      (next == 'A')  { state = AdaState::Header_d; }

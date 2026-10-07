@@ -1004,6 +1004,7 @@ class WS2812FX {
       return (getMappedPixelIndex(n) < getLengthTotal()) ? _pixels[n] : 0;
       #endif
     } // returns color of pixel n, black if out of (mapped) bounds
+    uint32_t getRealtimePixelColor(unsigned i) const;
     inline uint32_t getPixelColorNoMap(unsigned n) const {
       #ifdef WLED_DISABLE_GLOBAL_PIXELBUFFER
       return (n < getLengthTotal()) ? BusManager::getPixelColor(n) : 0;
@@ -1019,6 +1020,7 @@ class WS2812FX {
     Segment&        getSegment(unsigned id);
     inline Segment& getFirstSelectedSeg() { return _segments[getFirstSelectedSegId()]; }  // returns reference to first segment that is "selected"
     inline Segment& getMainSegment()      { return _segments[getMainSegmentId()]; }       // returns reference to main segment
+    inline const Segment& getMainSegment() const { return _segments[getMainSegmentId()]; }
     inline Segment* getSegments()         { return &(_segments[0]); }                     // returns pointer to segment vector structure (warning: use carefully)
 
   // 2D support (panels)

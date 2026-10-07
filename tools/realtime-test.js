@@ -38,14 +38,18 @@ it('realtime DDP and serial Ambilight packet regressions', t => {
   const root = process.env.WLED_REALTIME_TEST_SOURCE || path.resolve(__dirname, '..');
   const read = name => fs.readFileSync(path.join(root, 'wled00', name), 'utf8');
   const udp = read('udp.cpp'), ddp = read('e131.cpp'), serial = read('wled_serial.cpp');
+  const fx = read('FX_fcn.cpp');
   const constants = read('const.h'), e131 = read('src/dependencies/e131/ESPAsyncE131.h');
   const defines = [constants, e131].flatMap(source => source.split('\n').filter(line =>
     /^#define (?:DDP_\w+|REALTIME_MODE_\w+|REALTIME_OVERRIDE_\w+)\s/.test(line)
   )).join('\n');
   let source = fs.readFileSync(path.join(__dirname, '../test/realtime/fixture.h'), 'utf8');
   source = source.replace('/* CONSTANTS */', defines);
+  source += extract(fx, 'uint32_t WS2812FX::getRealtimePixelColor(') + '\n';
   source += extract(udp, 'void realtimeLock(') + '\n';
+  if (udp.includes('static bool mapRealtimePixel(')) source += extract(udp, 'static bool mapRealtimePixel(') + '\n';
   source += extract(udp, 'void setRealtimePixel(') + '\n';
+  if (udp.includes('uint32_t getRealtimePixel(')) source += extract(udp, 'uint32_t getRealtimePixel(') + '\n';
   source += extract(ddp, 'static void handleDDPPacket(e131_packet_t* p, size_t packetLen) {') + '\n';
   source += extract(serial, 'enum class AdaState') + ';\n';
   source += 'static bool continuousSendLED=false; static uint32_t lastUpdate=0;\n';
