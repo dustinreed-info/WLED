@@ -67,6 +67,7 @@ it('realtime DDP and serial Ambilight packet regressions', t => {
   if (udp.includes('uint32_t getRealtimePixel(')) source += extract(udp, 'uint32_t getRealtimePixel(') + '\n';
   source += extract(ddp, 'static void handleDDPPacket(e131_packet_t* p, size_t packetLen) {') + '\n';
   source += extract(serial, 'enum class AdaState') + ';\n';
+  if (serial.includes('static AdaState getSerialHeaderState(')) source += extract(serial, 'static AdaState getSerialHeaderState(') + '\n';
   source += 'static bool continuousSendLED=false; static uint32_t lastUpdate=0;\n';
   source += extract(serial, 'void handleSerial(') + '\n';
   source += fs.readFileSync(path.join(__dirname, '../test/realtime/cases.cpp'), 'utf8');

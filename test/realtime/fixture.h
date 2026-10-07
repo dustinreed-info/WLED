@@ -84,11 +84,12 @@ struct e131_packet_t {
 
 struct FakeSerial {
   std::deque<byte> input;
+  std::vector<byte> output;
   explicit operator bool() const { return true; }
   unsigned available() const { return input.size(); }
   byte peek() const { return input.front(); }
   byte read() { byte b=input.front(); input.pop_front(); return b; }
-  void write(byte) {}
+  void write(byte b) { output.push_back(b); }
   template<class T> void print(const T&) {}
   template<class T> void println(const T&) {}
   void println() {}

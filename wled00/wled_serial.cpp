@@ -22,6 +22,13 @@ enum class AdaState {
   TPM2_Header_CountLo,
 };
 
+// Recognize a fresh frame prefix after an invalid or overlapping header.
+static AdaState getSerialHeaderState(byte next) {
+  if (next == 'A') return AdaState::Header_d;
+  if (next == 0xC9) return AdaState::TPM2_Header_Type;
+  return AdaState::Header_A;
+}
+
 static uint16_t currentBaud = 1152; //default baudrate 115200 (divided by 100)
 static bool continuousSendLED = false;
 static uint32_t lastUpdate = 0;
@@ -141,11 +148,11 @@ void handleSerial()
         break;
       case AdaState::Header_d:
         if (next == 'd') state = AdaState::Header_a;
-        else             state = AdaState::Header_A;
+        else             state = getSerialHeaderState(next);
         break;
       case AdaState::Header_a:
         if (next == 'a') state = AdaState::Header_CountHi;
-        else             state = AdaState::Header_A;
+        else             state = getSerialHeaderState(next);
         break;
       case AdaState::Header_CountHi:
         pixel = 0;
@@ -163,10 +170,10 @@ void handleSerial()
           realtimeLock(realtimeTimeoutMs, REALTIME_MODE_ADALIGHT);
           state = AdaState::Data_Red;
         }
-        else               state = AdaState::Header_A;
+        else               state = getSerialHeaderState(next);
         break;
       case AdaState::TPM2_Header_Type:
-        state = AdaState::Header_A; //(unsupported) TPM2 command or invalid type
+        state = getSerialHeaderState(next); // recover a fresh prefix after an unsupported type
         if (next == 0xDA) state = AdaState::TPM2_Header_CountHi; //TPM2 data
         else if (next == 0xAA) Serial.write(0xAC); //TPM2 ping
         break;
