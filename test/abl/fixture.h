@@ -3,6 +3,7 @@
 // including RgbwColor(uint8_t), which must never receive a packed RGBW integer.
 // Constructor reference: Makuna/NeoPixelBus, src/internal/colors/RgbwColor.h
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -143,7 +144,9 @@ namespace BusManager {
 /* POLYBUS */
 uint16_t approximateKelvinFromRGB(uint32_t);
 uint32_t color_fade(uint32_t, uint8_t, bool);
-uint32_t colorBalanceFromKelvin(int, uint32_t c) { return c; }
+void colorKtoRGB(uint16_t, byte*);
+uint32_t colorBalanceFromKelvin(uint16_t, uint32_t);
+inline int constrain(int value, int minimum, int maximum) { return std::min(std::max(value, minimum), maximum); }
 struct FakeColorMap { uint8_t getPixelColorOrder(unsigned, uint8_t co) { return co; } } _colorOrderMap;
 uint8_t bri=77;
 byte realtimeMode=REALTIME_MODE_INACTIVE, realtimeOverride=REALTIME_OVERRIDE_NONE;
@@ -198,6 +201,30 @@ public:
   void setBrightness(uint8_t b) override { _bri=b; }
   void estimateCurrent();
   void applyBriLimit(uint8_t);
+  void setPixelColor(unsigned, uint32_t);
+};
+
+// Single-pixel fixtures for the real PWM and virtual RGBW setters.
+class FakeSingleOutput : public Bus {
+public:
+  uint16_t getLEDCurrent() const override { return 0; }
+  uint16_t getMaxCurrent() const override { return 0; }
+  CURRENT_TYPE getUsedCurrent() const override { return 0; }
+  unsigned getLength() const override { return 1; }
+};
+class BusPwm : public FakeSingleOutput {
+public:
+  uint8_t _data[5]={};
+  bool cctICused=false;
+  explicit BusPwm(uint8_t type=TYPE_ANALOG_4CH) { _type=type; _hasCCT=hasCCT(); }
+  void setPixelColor(unsigned, uint32_t);
+};
+class BusNetwork : public FakeSingleOutput {
+public:
+  uint8_t _data[4]={};
+  bool _hasWhite=true;
+  unsigned _len=1, _UDPchannels=4;
+  BusNetwork() { _type=TYPE_NET_DDP_RGBW; _hasCCT=false; }
   void setPixelColor(unsigned, uint32_t);
 };
 

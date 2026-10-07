@@ -84,10 +84,12 @@ it('digital pixel readback and automatic brightness limiter regressions', t => {
 
   let source = fixture + '\n';
   source += extractFunction(colors, 'uint16_t approximateKelvinFromRGB(') + '\n';
+  source += extractFunction(colors, 'void colorKtoRGB(') + '\n';
+  source += extractFunction(colors, 'uint32_t colorBalanceFromKelvin(') + '\n';
   source += extractFunction(colors, 'uint32_t IRAM_ATTR color_fade(') + '\n';
   for (const signature of ['void Bus::calculateCCT(', 'uint32_t Bus::autoWhiteCalc(',
     'void BusDigital::estimateCurrent(', 'void BusDigital::applyBriLimit(',
-    'void IRAM_ATTR BusDigital::setPixelColor(', 'void BusManager::initializeABL(', 'void BusManager::applyABL(']) {
+    'void IRAM_ATTR BusDigital::setPixelColor(', 'void BusPwm::setPixelColor(', 'void BusNetwork::setPixelColor(', 'void BusManager::initializeABL(', 'void BusManager::applyABL(']) {
     source += extractFunction(bus, signature) + '\n';
   }
   source += extractFunction(fx, 'bool WS2812FX::hasRGBWBus(') + '\n';
@@ -125,7 +127,8 @@ it('digital pixel readback and automatic brightness limiter regressions', t => {
     const cpp = path.join(temp, 'abl.cpp');
     const binary = path.join(temp, 'abl-test');
     fs.writeFileSync(cpp, source);
-    const build = spawnSync(compiler, ['-std=c++17', '-O0', '-Wall', '-Wextra', '-Wno-misleading-indentation', cpp, '-o', binary], { encoding: 'utf8' });
+    const sanitize = process.env.WLED_ABL_SANITIZE === '1' ? ['-fsanitize=address,undefined', '-fno-omit-frame-pointer'] : [];
+    const build = spawnSync(compiler, ['-std=c++17', '-O0', '-Wall', '-Wextra', '-Wno-misleading-indentation', ...sanitize, cpp, '-o', binary], { encoding: 'utf8' });
     assert.equal(build.status, 0, `${build.stdout}\n${build.stderr}`);
     const run = spawnSync(binary, [], { encoding: 'utf8' });
     t.diagnostic(run.stdout.trim().split('\n').at(-1));

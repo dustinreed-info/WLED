@@ -317,6 +317,91 @@ int main() {
     realtimeMode=REALTIME_MODE_DDP;
     CHECK(strip.updateCCTBuffer() && strip._pixelCCT[0]==127);
   }});
+  checks.push_back({"SK6812 RGBW ordering and white swaps survive current limiting", [] {
+    for (bool parallel : {false,true}) {
+      for (uint8_t order=0;order<6;order++) {
+        for (uint8_t swap=0;swap<4;swap++) {
+          BusDigital bus(3,2,TYPE_SK6812_RGBW);
+          bus._iType=parallel ? I_32_I2_NEO_4 : I_32_RN_NEO_4;
+          PolyBus::_useParallelI2S=parallel; bus._colorOrder=order|(swap<<4); bus._reversed=true;
+          for (unsigned i=0;i<3;i++) bus.setPixelColor(i,RGBW32(200,0,0,180));
+          for (unsigned i=2;i<5;i++) CHECK(PolyBus::getPixelColor(bus._busPtr,bus._iType,i,bus._colorOrder)==RGBW32(200,0,0,180));
+          bus.applyBriLimit(128);
+          for (unsigned i=2;i<5;i++) {
+            uint32_t c=PolyBus::getPixelColor(bus._busPtr,bus._iType,i,bus._colorOrder);
+            CHECK(R(c)>0 && R(c)<200 && G(c)==0 && B(c)==0 && W(c)>0 && W(c)<180);
+          }
+          for (unsigned i=0;i<2;i++) CHECK(PolyBus::getPixelColor(bus._busPtr,bus._iType,i,bus._colorOrder)==0);
+        }
+      }
+    }
+  }});
+  checks.push_back({"SK6812 auto-white modes preserve their documented channel behavior", [] {
+    for (uint8_t mode : {RGBW_MODE_MANUAL_ONLY, RGBW_MODE_AUTO_BRIGHTER, RGBW_MODE_AUTO_ACCURATE, RGBW_MODE_DUAL, RGBW_MODE_MAX}) {
+      BusDigital bus(1,0,TYPE_SK6812_RGBW); bus._autoWhiteMode=mode;
+      bus.setPixelColor(0,RGBW32(100,60,20,80));
+      const auto before=bus.raw->pixels[0];
+      if (mode==RGBW_MODE_MANUAL_ONLY || mode==RGBW_MODE_DUAL) CHECK(before.R==100 && before.G==60 && before.B==20 && before.W==80);
+      else if (mode==RGBW_MODE_AUTO_ACCURATE) CHECK(before.R==80 && before.G==40 && before.B==0 && before.W==20);
+      else if (mode==RGBW_MODE_MAX) CHECK(before.R==100 && before.G==60 && before.B==20 && before.W==100);
+      else CHECK(before.R==100 && before.G==60 && before.B==20 && before.W==20);
+      bus.applyBriLimit(128); const auto after=bus.raw->pixels[0];
+      CHECK(after.W>0 && after.W<before.W);
+      CHECK((after.R==0)==(before.R==0) && (after.G==0)==(before.G==0) && (after.B==0)==(before.B==0));
+    }
+    BusDigital bus(1,0,TYPE_SK6812_RGBW); bus._autoWhiteMode=RGBW_MODE_DUAL;
+    bus.setPixelColor(0,RGBW32(100,60,20,0));
+    CHECK(bus.raw->pixels[0].W==20);
+    Bus::_gAWM=RGBW_MODE_MANUAL_ONLY;
+    bus.setPixelColor(0,RGBW32(100,60,20,80));
+    CHECK(bus.raw->pixels[0].W==80);
+  }});
+  checks.push_back({"SK6812 current accounts for its actual RGBW output channels", [] {
+    BusDigital bus(100,0,TYPE_SK6812_RGBW);
+    for (unsigned i=0;i<100;i++) bus.setPixelColor(i,RGBW32(0,0,0,255));
+    bus.estimateCurrent(); CHECK(bus.getUsedCurrent()==1475);
+    bus.applyBriLimit(255);
+    for (unsigned i=0;i<100;i++) bus.setPixelColor(i,RGBW32(255,255,255,255));
+    bus.estimateCurrent(); CHECK(bus.getUsedCurrent()==5600);
+  }});
+  checks.push_back({"digital RGBW white balance matches virtual RGBW output", [] {
+    for (uint8_t mode : {RGBW_MODE_MANUAL_ONLY, RGBW_MODE_AUTO_BRIGHTER, RGBW_MODE_AUTO_ACCURATE, RGBW_MODE_DUAL, RGBW_MODE_MAX}) {
+      BusDigital digital(1,0,TYPE_SK6812_RGBW); digital._autoWhiteMode=mode;
+      BusNetwork network; network._autoWhiteMode=mode;
+      for (uint16_t kelvin : {1900,2700,6500,10000}) {
+        Bus::_cct=kelvin;
+        for (uint32_t c : {RGBW32(100,60,20,0),RGBW32(100,100,100,0),RGBW32(100,60,20,80),RGBW32(0,0,255,0)}) {
+          digital.setPixelColor(0,c); network.setPixelColor(0,c);
+          const auto& p=digital.raw->pixels[0];
+          CHECK(p.R==network._data[0] && p.G==network._data[1] && p.B==network._data[2] && p.W==network._data[3]);
+        }
+      }
+    }
+  }});
+  checks.push_back({"PWM RGBW white balance matches virtual RGBW output", [] {
+    for (uint8_t mode : {RGBW_MODE_MANUAL_ONLY, RGBW_MODE_AUTO_BRIGHTER, RGBW_MODE_AUTO_ACCURATE, RGBW_MODE_DUAL, RGBW_MODE_MAX}) {
+      BusPwm pwm; pwm._autoWhiteMode=mode;
+      BusNetwork network; network._autoWhiteMode=mode;
+      for (uint16_t kelvin : {1900,2700,6500,10000}) {
+        Bus::_cct=kelvin;
+        for (uint32_t c : {RGBW32(100,60,20,0),RGBW32(100,100,100,0),RGBW32(100,60,20,80),RGBW32(0,0,255,0)}) {
+          pwm.setPixelColor(0,c); network.setPixelColor(0,c);
+          for (unsigned channel=0;channel<4;channel++) CHECK(pwm._data[channel]==network._data[channel]);
+        }
+      }
+    }
+  }});
+  checks.push_back({"WS2805 white extraction is independent of RGB white balance", [] {
+    for (uint8_t mode : {RGBW_MODE_AUTO_BRIGHTER,RGBW_MODE_AUTO_ACCURATE,RGBW_MODE_DUAL}) {
+      BusDigital bus(1); bus._autoWhiteMode=mode;
+      for (uint16_t kelvin : {1900,2700,6500,10000}) {
+        Bus::_cct=kelvin; bus.setPixelColor(0,RGBW32(100,100,100,0));
+        const auto& p=bus.raw->pixels[0];
+        CHECK(p.WW+p.CW>=99 && p.WW+p.CW<=100);
+        if (mode==RGBW_MODE_AUTO_ACCURATE) CHECK(p.R==0 && p.G==0 && p.B==0);
+      }
+    }
+  }});
   unsigned failures=0;
   for (const auto& check : checks) {
     resetState();
