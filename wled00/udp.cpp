@@ -663,10 +663,14 @@ void handleNotifications()
 }
 
 
-void setRealtimePixel(uint16_t i, byte r, byte g, byte b, byte w)
+void setRealtimePixel(uint32_t i, byte r, byte g, byte b, byte w)
 {
-  unsigned pix = i + arlsOffset;
-  strip.setRealtimePixelColor(pix, RGBW32(r,g,b,w));
+  // Keep protocol offsets wide until after clipping. Narrowing a DDP index or
+  // adding the signed realtime offset in unsigned arithmetic can wrap onto LED 0.
+  int64_t pix = int64_t(i) + arlsOffset;
+  unsigned length = useMainSegmentOnly ? strip.getMainSegment().length() : strip.getLengthTotal();
+  if (pix < 0 || uint64_t(pix) >= length) return;
+  strip.setRealtimePixelColor(unsigned(pix), RGBW32(r,g,b,w));
 }
 
 /*********************************************************************************************\

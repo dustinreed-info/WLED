@@ -75,8 +75,8 @@ void handleSerial()
   if (!(serialCanRX && Serial)) return; // arduino docs: `if (Serial)` indicates whether or not the USB CDC serial connection is open. For all non-USB CDC ports, this will always return true
 
   static auto state = AdaState::Header_A;
-  static uint16_t count = 0;
-  static uint16_t pixel = 0;
+  static uint32_t count = 0; // Adalight encodes count-1, so 0xFFFF represents 65536 pixels
+  static uint32_t pixel = 0;
   static byte check = 0x00;
   static byte red   = 0x00;
   static byte green = 0x00;
@@ -148,7 +148,10 @@ void handleSerial()
         state = AdaState::Header_CountCheck;
         break;
       case AdaState::Header_CountCheck:
-        if (check == next) state = AdaState::Data_Red;
+        if (check == next) {
+          realtimeLock(realtimeTimeoutMs, REALTIME_MODE_ADALIGHT);
+          state = AdaState::Data_Red;
+        }
         else               state = AdaState::Header_A;
         break;
       case AdaState::TPM2_Header_Type:
@@ -158,12 +161,18 @@ void handleSerial()
         break;
       case AdaState::TPM2_Header_CountHi:
         pixel = 0;
-        count = (next * 0x100) /3;
+        count = next * 0x100;
         state = AdaState::TPM2_Header_CountLo;
         break;
       case AdaState::TPM2_Header_CountLo:
-        count += next /3;
-        state = AdaState::Data_Red;
+        count += next;
+        if (count == 0 || count % 3 != 0) {
+          state = AdaState::Header_A; // only complete 24-bit RGB pixels are supported
+        } else {
+          count /= 3;
+          realtimeLock(realtimeTimeoutMs, REALTIME_MODE_ADALIGHT);
+          state = AdaState::Data_Red;
+        }
         break;
       case AdaState::Data_Red:
         red   = next;
@@ -175,7 +184,8 @@ void handleSerial()
         break;
       case AdaState::Data_Blue:
         byte blue  = next;
-        if (!realtimeOverride) setRealtimePixel(pixel++, red, green, blue, 0);
+        if (!realtimeOverride) setRealtimePixel(pixel, red, green, blue, 0);
+        pixel++; // consume positions even while realtime output is overridden
         if (--count > 0) state = AdaState::Data_Red;
         else {
           realtimeLock(realtimeTimeoutMs, REALTIME_MODE_ADALIGHT);
