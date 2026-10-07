@@ -1,6 +1,6 @@
 #define CHECK(x) do { if (!(x)) throw std::runtime_error(#x); } while(0)
 static void reset() {
-  strip=Strip{}; Serial.input.clear(); realtimeRespectLedMaps=true;
+  strip=Strip{}; Serial.input.clear(); realtimeRespectLedMaps=true; e131SkipOutOfSequence=true;
   realtimeOverride=0; realtimeMode=0; realtimeTimeout=0;
   useMainSegmentOnly=false; arlsOffset=0; DMXAddress=1;
   e131NewData=false; std::fill(std::begin(e131LastSequenceNumber),std::end(e131LastSequenceNumber),0);
@@ -238,6 +238,65 @@ int main() {
     CHECK(realtimeMode==REALTIME_MODE_DDP);
     p=packet(3,true,{99}); handleDDPPacket(&p,DDP_HEADER_LEN+1);
     CHECK(strip.colors[0]==0);
+  }});
+  cases.push_back({"DDP sequence numbers restart after leaving realtime mode", [] {
+    auto p=packet(0,true,{11,22,33,44}); p.sequenceNum=4;
+    handleDDPPacket(&p,DDP_HEADER_LEN+4); exitRealtime();
+    p=packet(0,true,{55,66,77,88}); p.sequenceNum=1;
+    handleDDPPacket(&p,DDP_HEADER_LEN+4);
+    CHECK(realtimeMode==REALTIME_MODE_DDP && strip.colors[0]==RGBW32(55,66,77,88));
+    CHECK(e131LastSequenceNumber[0]==1);
+  }});
+  cases.push_back({"DDP does not inherit sequence numbers from another realtime protocol", [] {
+    auto p=packet(0,true,{11,22,33,44}); p.sequenceNum=4;
+    handleDDPPacket(&p,DDP_HEADER_LEN+4);
+    realtimeLock(2500,REALTIME_MODE_ADALIGHT);
+    p=packet(0,true,{55,66,77,88}); p.sequenceNum=1;
+    handleDDPPacket(&p,DDP_HEADER_LEN+4);
+    CHECK(realtimeMode==REALTIME_MODE_DDP && strip.colors[0]==RGBW32(55,66,77,88));
+  }});
+  cases.push_back({"unsequenced first DDP packet clears the old stream's sequence", [] {
+    auto p=packet(0,true,{11,22,33,44}); p.sequenceNum=4;
+    handleDDPPacket(&p,DDP_HEADER_LEN+4); exitRealtime();
+    p=packet(0,true,{55,66,77,88}); p.sequenceNum=0;
+    handleDDPPacket(&p,DDP_HEADER_LEN+4);
+    CHECK(e131LastSequenceNumber[0]==0);
+    p.sequenceNum=1; p.data[0]=99;
+    handleDDPPacket(&p,DDP_HEADER_LEN+4); CHECK(R(strip.colors[0])==99);
+  }});
+  cases.push_back({"late DDP packets remain rejected within the same stream", [] {
+    auto p=packet(0,true,{11,22,33,44}); p.sequenceNum=4;
+    handleDDPPacket(&p,DDP_HEADER_LEN+4);
+    p.sequenceNum=3; p.data[0]=99; e131NewData=false;
+    handleDDPPacket(&p,DDP_HEADER_LEN+4);
+    CHECK(!e131NewData && R(strip.colors[0])==11 && e131LastSequenceNumber[0]==4);
+  }});
+  cases.push_back({"DDP sequence wrap accepts the new frame and rejects an old one", [] {
+    auto p=packet(0,true,{11,22,33,44}); p.sequenceNum=15;
+    handleDDPPacket(&p,DDP_HEADER_LEN+4);
+    p.sequenceNum=1; p.data[0]=55; handleDDPPacket(&p,DDP_HEADER_LEN+4);
+    CHECK(R(strip.colors[0])==55 && e131LastSequenceNumber[0]==1);
+    p.sequenceNum=15; p.data[0]=99; handleDDPPacket(&p,DDP_HEADER_LEN+4);
+    CHECK(R(strip.colors[0])==55 && e131LastSequenceNumber[0]==1);
+  }});
+  cases.push_back({"truncated DDP cannot reset sequence state before validation", [] {
+    auto p=packet(0,true,{11,22,33,44}); p.sequenceNum=4;
+    handleDDPPacket(&p,DDP_HEADER_LEN+4); exitRealtime(); e131NewData=false;
+    p.sequenceNum=1; handleDDPPacket(&p,DDP_HEADER_LEN+3);
+    CHECK(realtimeMode==REALTIME_MODE_INACTIVE && !e131NewData && e131LastSequenceNumber[0]==4);
+  }});
+  cases.push_back({"DDP late-packet skipping can still be explicitly disabled", [] {
+    auto p=packet(0,true,{11,22,33,44}); p.sequenceNum=4;
+    handleDDPPacket(&p,DDP_HEADER_LEN+4); e131SkipOutOfSequence=false;
+    p.sequenceNum=3; p.data[0]=99; handleDDPPacket(&p,DDP_HEADER_LEN+4);
+    CHECK(R(strip.colors[0])==99 && e131LastSequenceNumber[0]==3);
+  }});
+  cases.push_back({"restarted legacy DDP streams do not inherit push gating", [] {
+    auto p=packet(0,true,{11,22,33,44}); p.sequenceNum=4;
+    handleDDPPacket(&p,DDP_HEADER_LEN+4); exitRealtime(); e131NewData=false;
+    p.sequenceNum=1; p.flags&=~DDP_FLAGS_PUSH; p.data[0]=99;
+    handleDDPPacket(&p,DDP_HEADER_LEN+4);
+    CHECK(e131NewData && R(strip.colors[0])==99);
   }});
   unsigned failures=0;
   for (const auto& entry : cases) {
