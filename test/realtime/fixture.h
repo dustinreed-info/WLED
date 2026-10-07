@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <deque>
 #include <functional>
@@ -37,13 +38,23 @@ void updateInterfaces(byte) {}
 int arlsOffset=0;
 uint16_t DMXAddress=1;
 byte e131LastSequenceNumber[16]={};
+byte errorFlag=0;
+bool failSerialAllocation=false;
+unsigned serialAllocations=0, serialFrees=0;
+size_t lastSerialAllocationSize=0;
+void* allocate_buffer(size_t size, uint32_t) {
+  serialAllocations++; lastSerialAllocationSize=size;
+  return failSerialAllocation ? nullptr : std::malloc(size);
+}
+void p_free(void* p) { if (p) { serialFrees++; std::free(p); } }
 
 struct Segment {
   size_t count=8;
   bool freeze=false;
+  bool storageAvailable=true;
   mutable std::vector<uint32_t> colors=std::vector<uint32_t>(8,0);
   unsigned length() const { return count; }
-  bool isActive() const { return count>0; }
+  bool isActive() const { return count>0 && storageAvailable; }
   void clear() { std::fill(colors.begin(),colors.end(),0); }
   void setPixelColorRaw(unsigned n, uint32_t c) const { colors.at(n)=c; }
   uint32_t getPixelColorRaw(unsigned n) const { return n<colors.size() ? colors[n] : 0; }
@@ -54,11 +65,14 @@ struct WS2812FX {
   uint16_t customMappingSize=0;
   uint16_t* customMappingTable=nullptr;
   Segment main;
+  byte mainSegmentId=0;
+  unsigned segmentCount=1;
   unsigned shows=0;
   unsigned getLengthTotal() const { return colors.size(); }
   Segment& getMainSegment() { return main; }
   const Segment& getMainSegment() const { return main; }
-  unsigned getSegmentsNum() const { return 1; }
+  byte getMainSegmentId() const { return mainSegmentId; }
+  unsigned getSegmentsNum() const { return segmentCount; }
   Segment& getSegment(unsigned) { return main; }
   void fill(uint32_t c) const;
   void resizePixels(size_t count) { colors.resize(count); shown.resize(count); _pixels=colors.data(); }
@@ -85,7 +99,8 @@ struct e131_packet_t {
 struct FakeSerial {
   std::deque<byte> input;
   std::vector<byte> output;
-  explicit operator bool() const { return true; }
+  bool connected=true;
+  explicit operator bool() const { return connected; }
   unsigned available() const { return input.size(); }
   byte peek() const { return input.front(); }
   byte read() { byte b=input.front(); input.pop_front(); return b; }

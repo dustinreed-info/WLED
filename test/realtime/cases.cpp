@@ -1,5 +1,8 @@
 #define CHECK(x) do { if (!(x)) throw std::runtime_error(#x); } while(0)
 static void reset() {
+  serialFrame.clear();
+  failSerialAllocation=false; serialAllocations=0; serialFrees=0; lastSerialAllocationSize=0; errorFlag=0;
+  serialCanRX=true; Serial.connected=true;
   strip=Strip{}; Serial.input.clear(); Serial.output.clear(); realtimeRespectLedMaps=true; e131SkipOutOfSequence=true;
   realtimeOverride=0; realtimeMode=0; realtimeTimeout=0;
   useMainSegmentOnly=false; arlsOffset=0; DMXAddress=1;
@@ -331,6 +334,189 @@ int main() {
     feed({0xC9,0xAA,0xC9,0xDA,0,3,11,22,33,0x36});
     CHECK(Serial.output==std::vector<byte>{0xAC});
     CHECK(strip.shows==1 && strip.shown[0]==RGBW32(11,22,33,0));
+  }});
+  cases.push_back({"first main-segment serial frame preserves the previous scene until complete", [] {
+    useMainSegmentOnly=true; std::fill(strip.main.colors.begin(),strip.main.colors.end(),RGBW32(100,100,0,0));
+    auto before=strip.main.colors;
+    feed({'A','d','a',0,1,0x54}); strip.show(); auto during=strip.shown;
+    feed({11,22,33,44,55,66});
+    CHECK(during==before);
+    CHECK(strip.shown[0]==RGBW32(11,22,33,0) && strip.shown[1]==RGBW32(44,55,66,0));
+  }});
+  cases.push_back({"ongoing main-segment serial frame cannot expose a partial update", [] {
+    useMainSegmentOnly=true; realtimeMode=REALTIME_MODE_ADALIGHT; strip.main.freeze=true;
+    std::fill(strip.main.colors.begin(),strip.main.colors.end(),RGBW32(100,100,0,0));
+    auto before=strip.main.colors;
+    feed({'A','d','a',0,1,0x54,11,22,33}); strip.show(); auto during=strip.shown;
+    feed({44,55,66});
+    CHECK(during==before);
+    CHECK(strip.shown[0]==RGBW32(11,22,33,0) && strip.shown[1]==RGBW32(44,55,66,0));
+  }});
+  cases.push_back({"long serial frames remain intact while realtime maintenance runs", [] {
+    fakeTime=100; feed({'A','d','a',0,2,0x57,11});
+    for (byte b : {22,33,44,55,66,77,88,99}) {
+      fakeTime+=700; feed({b}); checkRealtimeMaintenance();
+    }
+    CHECK(strip.shown[0]==RGBW32(11,22,33,0) && strip.shown[2]==RGBW32(77,88,99,0));
+  }});
+  cases.push_back({"invalid TPM2 footer cannot publish its candidate RGB data", [] {
+    realtimeMode=REALTIME_MODE_ADALIGHT; strip.colors[0]=RGBW32(100,100,0,0);
+    feed({0xC9,0xDA,0,3,11,22,33,0x00});
+    CHECK(strip.shows==0 && strip.colors[0]==RGBW32(100,100,0,0));
+  }});
+  cases.push_back({"serial candidate storage is bounded and reused across frames", [] {
+    for (unsigned frame=0;frame<100;frame++) feed({'A','d','a',0,0,0x55,11,22,33});
+    CHECK(serialAllocations==1 && serialFrees==0 && lastSerialAllocationSize==4);
+    CHECK(strip.shows==100);
+  }});
+  cases.push_back({"maximum Adalight count allocates only the visible canvas", [] {
+    std::vector<byte> bytes={'A','d','a',255,255,0x55};
+    for (unsigned i=0;i<65536;i++) bytes.insert(bytes.end(),{11,22,33});
+    feed(bytes); CHECK(lastSerialAllocationSize==8*sizeof(uint32_t) && serialAllocations==1);
+    CHECK(strip.shows==1 && strip.shown[7]==RGBW32(11,22,33,0));
+  }});
+  cases.push_back({"positive serial offset stages only its clipped visible span", [] {
+    arlsOffset=7; feed({'A','d','a',0,1,0x54,11,22,33,44,55,66});
+    CHECK(lastSerialAllocationSize==4 && strip.shown[7]==RGBW32(11,22,33,0));
+    CHECK(strip.shown[0]==0);
+  }});
+  cases.push_back({"negative serial offset drops leading pixels before staging", [] {
+    arlsOffset=-1; feed({'A','d','a',0,1,0x54,11,22,33,44,55,66});
+    CHECK(lastSerialAllocationSize==4 && strip.shown[0]==RGBW32(44,55,66,0));
+    CHECK(strip.shown[1]==0);
+  }});
+  cases.push_back({"fully clipped serial frames need no candidate allocation", [] {
+    arlsOffset=-10; feed({'A','d','a',0,0,0x55,11,22,33});
+    CHECK(serialAllocations==0 && strip.shows==1 && strip.shown[0]==0);
+  }});
+  cases.push_back({"serial allocation failure preserves the scene and recovers", [] {
+    strip.colors[0]=RGBW32(100,100,0,0); failSerialAllocation=true;
+    feed({'A','d','a',0,0,0x55,11,22,33});
+    CHECK(errorFlag==ERR_NORAM_PX && strip.shows==0 && realtimeMode==REALTIME_MODE_INACTIVE);
+    CHECK(strip.colors[0]==RGBW32(100,100,0,0));
+    failSerialAllocation=false; feed({'A','d','a',0,0,0x55,44,55,66});
+    CHECK(strip.shows==1 && strip.shown[0]==RGBW32(44,55,66,0));
+  }});
+  cases.push_back({"idle serial input releases candidate storage without repainting", [] {
+    feed({'A','d','a',0,0,0x55,11,22,33}); auto before=strip.shown;
+    fakeTime+=1001; handleSerial();
+    CHECK(serialFrees==1 && strip.shows==1 && strip.shown==before);
+    feed({'A','d','a',0,0,0x55,44,55,66});
+    CHECK(serialAllocations==2 && strip.shows==2);
+  }});
+  cases.push_back({"interrupted serial candidates abort without changing live pixels", [] {
+    useMainSegmentOnly=true; realtimeMode=REALTIME_MODE_ADALIGHT; strip.main.colors[0]=RGBW32(100,100,0,0);
+    feed({'A','d','a',0,1,0x54,11,22,33}); fakeTime+=1001; handleSerial();
+    CHECK(serialFrees==1 && strip.main.colors[0]==RGBW32(100,100,0,0));
+    feed({'A','d','a',0,0,0x55,44,55,66});
+    CHECK(strip.shows==1 && strip.shown[0]==RGBW32(44,55,66,0));
+  }});
+  cases.push_back({"USB serial disconnection aborts and frees a partial candidate", [] {
+    strip.colors[0]=RGBW32(100,100,0,0); feed({'A','d','a',0,1,0x54,11,22,33});
+    Serial.connected=false; handleSerial();
+    CHECK(serialFrees==1 && strip.colors[0]==RGBW32(100,100,0,0));
+    Serial.connected=true; feed({'A','d','a',0,0,0x55,44,55,66});
+    CHECK(strip.shows==1 && strip.shown[0]==RGBW32(44,55,66,0));
+  }});
+  cases.push_back({"serial disabled during a frame releases candidate storage", [] {
+    feed({'A','d','a',0,1,0x54,11,22,33}); serialCanRX=false; handleSerial();
+    CHECK(serialFrees==1 && strip.shows==0);
+    serialCanRX=true; feed({'A','d','a',0,0,0x55,44,55,66});
+    CHECK(strip.shows==1 && strip.shown[0]==RGBW32(44,55,66,0));
+  }});
+  cases.push_back({"signed offset changes reject an in-progress serial candidate", [] {
+    feed({'A','d','a',0,1,0x54,11,22,33}); arlsOffset=1; feed({44,55,66});
+    CHECK(strip.shows==0 && realtimeMode==REALTIME_MODE_INACTIVE && strip.colors[1]==0);
+    feed({'A','d','a',0,0,0x55,44,55,66}); CHECK(strip.shown[1]==RGBW32(44,55,66,0));
+  }});
+  cases.push_back({"canvas changes reject an in-progress serial candidate", [] {
+    feed({'A','d','a',0,1,0x54,11,22,33}); strip.resizePixels(4); feed({44,55,66});
+    CHECK(strip.shows==0 && realtimeMode==REALTIME_MODE_INACTIVE);
+    feed({'A','d','a',0,0,0x55,44,55,66}); CHECK(strip.shown[0]==RGBW32(44,55,66,0));
+  }});
+  cases.push_back({"changing the realtime target rejects an in-progress serial candidate", [] {
+    feed({'A','d','a',0,1,0x54,11,22,33}); useMainSegmentOnly=true; feed({44,55,66});
+    CHECK(strip.shows==0 && strip.main.colors[0]==0);
+  }});
+  cases.push_back({"changing the main segment rejects an in-progress serial candidate", [] {
+    useMainSegmentOnly=true; feed({'A','d','a',0,1,0x54,11,22,33});
+    strip.mainSegmentId=1; strip.segmentCount=2; feed({44,55,66});
+    CHECK(strip.shows==0 && strip.main.colors[0]==0);
+  }});
+  cases.push_back({"an absent main segment cannot crash serial candidate setup", [] {
+    useMainSegmentOnly=true; strip.segmentCount=0;
+    feed({'A','d','a',0,0,0x55,11,22,33});
+    CHECK(errorFlag==ERR_NORAM_PX && serialAllocations==0 && strip.shows==0);
+  }});
+  cases.push_back({"overridden pixels preserve full RGBW values across initial takeover", [] {
+    strip.colors[0]=RGBW32(0,0,0,128); realtimeOverride=REALTIME_OVERRIDE_ALWAYS;
+    feed({'A','d','a',0,1,0x54,11,22,33});
+    realtimeOverride=REALTIME_OVERRIDE_NONE; feed({44,55,66});
+    CHECK(strip.shown[0]==RGBW32(0,0,0,128) && strip.shown[1]==RGBW32(44,55,66,0));
+  }});
+  cases.push_back({"override enabled before commit preserves the displayed scene", [] {
+    strip.colors[0]=RGBW32(100,100,0,0); feed({'A','d','a',0,1,0x54,11,22,33});
+    realtimeOverride=REALTIME_OVERRIDE_ALWAYS; feed({44,55,66});
+    CHECK(strip.shows==0 && strip.colors[0]==RGBW32(100,100,0,0));
+  }});
+  cases.push_back({"TPM2 candidate waits for a separately received valid footer", [] {
+    strip.colors[0]=RGBW32(100,100,0,0); feed({0xC9,0xDA,0,3,11,22,33});
+    CHECK(strip.shows==0 && strip.colors[0]==RGBW32(100,100,0,0));
+    feed({0x36}); CHECK(strip.shows==1 && strip.shown[0]==RGBW32(11,22,33,0));
+  }});
+  cases.push_back({"TPM2 bad footer can be the next valid Adalight prefix", [] {
+    feed({0xC9,0xDA,0,3,11,22,33,'A','d','a',0,0,0x55,44,55,66});
+    CHECK(strip.shows==1 && strip.shown[0]==RGBW32(44,55,66,0));
+  }});
+  cases.push_back({"an existing serial stream remains active across a long candidate", [] {
+    feed({'A','d','a',0,0,0x55,1,2,3});
+    feed({'A','d','a',0,2,0x57,11});
+    for (byte b : {22,33,44,55,66,77,88,99}) {
+      fakeTime+=700; feed({b}); checkRealtimeMaintenance();
+      CHECK(realtimeMode==REALTIME_MODE_ADALIGHT);
+    }
+    CHECK(strip.shown[0]==RGBW32(11,22,33,0) && strip.shown[2]==RGBW32(77,88,99,0));
+  }});
+  cases.push_back({"serial staging rejects unavailable main-segment pixel storage", [] {
+    useMainSegmentOnly=true; strip.main.storageAvailable=false;
+    feed({'A','d','a',0,0,0x55,11,22,33});
+    CHECK(serialAllocations==0 && strip.shows==0 && realtimeMode==REALTIME_MODE_INACTIVE);
+  }});
+  cases.push_back({"main-segment storage loss cannot publish an in-progress candidate", [] {
+    useMainSegmentOnly=true; feed({'A','d','a',0,1,0x54,11,22,33});
+    strip.main.storageAvailable=false; feed({44,55,66});
+    CHECK(strip.shows==0 && realtimeMode==REALTIME_MODE_INACTIVE && strip.main.colors[0]==0);
+  }});
+  cases.push_back({"serial staging grows when needed and reuses the larger allocation", [] {
+    feed({'A','d','a',0,0,0x55,11,22,33});
+    feed({'A','d','a',0,2,0x57,11,22,33,44,55,66,77,88,99});
+    CHECK(serialAllocations==2 && serialFrees==1 && lastSerialAllocationSize==12);
+    feed({'A','d','a',0,0,0x55,44,55,66});
+    CHECK(serialAllocations==2 && serialFrees==1 && strip.shows==3);
+  }});
+  cases.push_back({"failed serial staging growth preserves a previously displayed frame", [] {
+    feed({'A','d','a',0,0,0x55,11,22,33}); auto before=strip.shown;
+    failSerialAllocation=true;
+    feed({'A','d','a',0,2,0x57,44,55,66,77,88,99,100,110,120});
+    CHECK(errorFlag==ERR_NORAM_PX && strip.shows==1 && strip.shown==before && strip.colors==before);
+    failSerialAllocation=false; feed({'A','d','a',0,0,0x55,44,55,66});
+    CHECK(strip.shows==2 && strip.shown[0]==RGBW32(44,55,66,0));
+  }});
+  cases.push_back({"serial frames remain atomic at every byte split boundary", [] {
+    for (bool mainOnly : {false,true}) {
+      for (const auto& frame : {std::vector<byte>{'A','d','a',0,1,0x54,11,22,33,44,55,66},
+                              std::vector<byte>{0xC9,0xDA,0,6,11,22,33,44,55,66,0x36}}) {
+        for (unsigned split=1;split<frame.size();split++) {
+          reset(); useMainSegmentOnly=mainOnly;
+          auto& target=mainOnly ? strip.main.colors : strip.colors;
+          std::fill(target.begin(),target.end(),RGBW32(100,100,0,0)); auto before=target;
+          feed(std::vector<byte>(frame.begin(),frame.begin()+split));
+          CHECK(strip.shows==0 && target==before);
+          feed(std::vector<byte>(frame.begin()+split,frame.end()));
+          CHECK(strip.shows==1 && strip.shown[0]==RGBW32(11,22,33,0) && strip.shown[1]==RGBW32(44,55,66,0));
+        }
+      }
+    }
   }});
   unsigned failures=0;
   for (const auto& entry : cases) {
