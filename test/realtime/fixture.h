@@ -32,6 +32,8 @@ bool serialCanRX=true, serialCanTX=true, useMainSegmentOnly=false;
 bool e131SkipOutOfSequence=true, arlsForceMaxBri=false, e131NewData=false;
 byte realtimeOverride=0, realtimeMode=0, bri=77, briT=77, briLast=77;
 uint32_t realtimeTimeout=0, realtimeTimeoutMs=2500;
+std::array<byte,4> realtimeIP{};
+void updateInterfaces(byte) {}
 int arlsOffset=0;
 uint16_t DMXAddress=1;
 byte e131LastSequenceNumber[16]={};
@@ -57,6 +59,7 @@ struct WS2812FX {
   Segment& getSegment(unsigned) { return main; }
   void fill(uint32_t c) { std::fill(colors.begin(),colors.end(),c); }
   void setBrightness(uint8_t, bool) {}
+  void trigger() {}
   void setRealtimePixelColor(unsigned i, uint32_t c) {
     auto& target=useMainSegmentOnly ? main.colors : colors;
     if (i<target.size()) target[i]=c;
