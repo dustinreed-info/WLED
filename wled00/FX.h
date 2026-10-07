@@ -932,14 +932,14 @@ class WS2812FX {
       #ifdef WLED_DISABLE_GLOBAL_PIXELBUFFER
       n = getMappedPixelIndex(n); if (n < getLengthTotal()) BusManager::setPixelColor(n, c);
       #else
-      if (n < getLengthTotal()) _pixels[n] = c;
+      if (_pixels && n < getLengthTotal()) _pixels[n] = c;
       #endif
     }  // paints absolute strip pixel with index n and color c
     inline void resetTimebase()                               { timebase = 0UL - millis(); }
     inline void setPixelColor(unsigned n, uint8_t r, uint8_t g, uint8_t b, uint8_t w = 0) const
                                                               { setPixelColor(n, RGBW32(r,g,b,w)); }
     inline void setPixelColor(unsigned n, CRGB c) const       { setPixelColor(n, c.red, c.green, c.blue); }
-    inline void fill(uint32_t c) const                        { for (size_t i = 0; i < getLengthTotal(); i++) setPixelColor(i, c); } // fill whole strip with color (inline)
+    inline void fill(uint32_t c) const                        { for (size_t i = 0; i < getLengthTotal(); i++) setPixelColor(i, c); } // fill whole strip with color (inline); setPixelColor() guards missing storage
     inline void trigger()                                     { _triggered = true; }  // Forces the next frame to be computed on all active segments.
     inline void setTransition(uint16_t t)                     { _transitionDur = t; } // sets transition time (in ms)
     inline void appendSegment(uint16_t sStart=0, uint16_t sStop=30, uint16_t sStartY = 0, uint16_t sStopY = 1)
@@ -1001,15 +1001,15 @@ class WS2812FX {
       #ifdef WLED_DISABLE_GLOBAL_PIXELBUFFER
       n = getMappedPixelIndex(n); return n < getLengthTotal() ? BusManager::getPixelColor(n) : 0;
       #else
-      return (getMappedPixelIndex(n) < getLengthTotal()) ? _pixels[n] : 0;
+      return (_pixels && n < getLengthTotal() && getMappedPixelIndex(n) < getLengthTotal()) ? _pixels[n] : 0;
       #endif
-    } // returns color of pixel n, black if out of (mapped) bounds
+    } // returns color of pixel n, black if storage is unavailable or out of (mapped) bounds
     uint32_t getRealtimePixelColor(unsigned i) const;
     inline uint32_t getPixelColorNoMap(unsigned n) const {
       #ifdef WLED_DISABLE_GLOBAL_PIXELBUFFER
       return (n < getLengthTotal()) ? BusManager::getPixelColor(n) : 0;
       #else
-      return (n < getLengthTotal()) ? _pixels[n] : 0;
+      return (_pixels && n < getLengthTotal()) ? _pixels[n] : 0;
       #endif
     } // ignores mapping table
     inline uint32_t getLastShow() const             { return _lastShow; }                 // returns millis() timestamp of last strip.show() call

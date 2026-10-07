@@ -28,7 +28,7 @@ inline uint8_t W(uint32_t c) { return c >> 24; }
 uint32_t fakeTime=100;
 uint32_t millis() { return fakeTime; }
 void yield() {}
-bool serialCanRX=true, serialCanTX=true, useMainSegmentOnly=false;
+bool serialCanRX=true, serialCanTX=true, useMainSegmentOnly=false, realtimeRespectLedMaps=true;
 bool e131SkipOutOfSequence=true, arlsForceMaxBri=false, e131NewData=false;
 byte realtimeOverride=0, realtimeMode=0, bri=77, briT=77, briLast=77;
 uint32_t realtimeTimeout=0, realtimeTimeoutMs=2500;
@@ -41,15 +41,18 @@ byte e131LastSequenceNumber[16]={};
 struct Segment {
   size_t count=8;
   bool freeze=false;
-  std::vector<uint32_t> colors=std::vector<uint32_t>(8,0);
+  mutable std::vector<uint32_t> colors=std::vector<uint32_t>(8,0);
   unsigned length() const { return count; }
   bool isActive() const { return count>0; }
   void clear() { std::fill(colors.begin(),colors.end(),0); }
+  void setPixelColorRaw(unsigned n, uint32_t c) const { colors.at(n)=c; }
   uint32_t getPixelColorRaw(unsigned n) const { return n<colors.size() ? colors[n] : 0; }
 };
 struct WS2812FX {
   std::vector<uint32_t> colors=std::vector<uint32_t>(8,0), shown=colors;
   uint32_t* _pixels=colors.data();
+  uint16_t customMappingSize=0;
+  uint16_t* customMappingTable=nullptr;
   Segment main;
   unsigned shows=0;
   unsigned getLengthTotal() const { return colors.size(); }
@@ -57,16 +60,17 @@ struct WS2812FX {
   const Segment& getMainSegment() const { return main; }
   unsigned getSegmentsNum() const { return 1; }
   Segment& getSegment(unsigned) { return main; }
-  void fill(uint32_t c) { std::fill(colors.begin(),colors.end(),c); }
+  void fill(uint32_t c) const;
+  void resizePixels(size_t count) { colors.resize(count); shown.resize(count); _pixels=colors.data(); }
+  void setPixelColor(unsigned n, uint32_t c) const;
+  uint16_t getMappedPixelIndex(uint16_t index) const;
   void setBrightness(uint8_t, bool) {}
   void trigger() {}
-  void setRealtimePixelColor(unsigned i, uint32_t c) {
-    auto& target=useMainSegmentOnly ? main.colors : colors;
-    if (i<target.size()) target[i]=c;
-  }
+  void setRealtimePixelColor(unsigned i, uint32_t c);
   void show() { shown=useMainSegmentOnly ? main.colors : colors; shows++; }
   uint32_t getLastShow() const { return shows; }
-  uint32_t getPixelColor(unsigned n) const { return n<colors.size() ? colors[n] : 0; }
+  uint32_t getPixelColor(unsigned n) const;
+  uint32_t getPixelColorNoMap(unsigned n) const;
   uint32_t getRealtimePixelColor(unsigned n) const;
 } strip;
 using Strip=WS2812FX;
