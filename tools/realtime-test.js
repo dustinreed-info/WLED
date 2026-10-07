@@ -67,11 +67,11 @@ it('realtime DDP and serial Ambilight packet regressions', t => {
   if (udp.includes('uint32_t getRealtimePixel(')) source += extract(udp, 'uint32_t getRealtimePixel(') + '\n';
   source += extract(ddp, 'static void handleDDPPacket(e131_packet_t* p, size_t packetLen) {') + '\n';
   source += extract(serial, 'enum class AdaState') + ';\n';
-  const tpmFooter = serial.split('\n').find(line => line.startsWith('static constexpr byte TPM2_FRAME_END ='));
-  if (tpmFooter) source += tpmFooter + '\n';
+  source += serial.split('\n').filter(line => /^static constexpr .* TPM2_/.test(line)).join('\n') + '\n';
   if (serial.includes('static AdaState getSerialHeaderState(')) source += extract(serial, 'static AdaState getSerialHeaderState(') + '\n';
   if (serial.includes('class SerialFrameBuffer {')) source += extract(serial, 'class SerialFrameBuffer {') + ';\nstatic SerialFrameBuffer serialFrame;\n';
   source += 'static bool continuousSendLED=false; static uint32_t lastUpdate=0;\n';
+  source += extract(serial, 'static void sendBytes(){') + '\n';
   source += extract(serial, 'void handleSerial(') + '\n';
   source += fs.readFileSync(path.join(__dirname, '../test/realtime/cases.cpp'), 'utf8');
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'wled-realtime-'));

@@ -2,7 +2,8 @@
 static void reset() {
   serialFrame.clear();
   failSerialAllocation=false; serialAllocations=0; serialFrees=0; lastSerialAllocationSize=0; errorFlag=0;
-  serialCanRX=true; Serial.connected=true;
+  serialCanRX=true; serialCanTX=true; Serial.connected=true;
+  Serial.printCalls=0; Serial.printfCalls=0; jsonLockAvailable=true;
   strip=Strip{}; Serial.input.clear(); Serial.output.clear(); realtimeRespectLedMaps=true; e131SkipOutOfSequence=true;
   realtimeOverride=0; realtimeMode=0; realtimeTimeout=0;
   useMainSegmentOnly=false; arlsOffset=0; DMXAddress=1;
@@ -517,6 +518,48 @@ int main() {
         }
       }
     }
+  }});
+  cases.push_back({"TPM2 output encodes its actual RGB payload and white addition", [] {
+    strip.colors[0]=RGBW32(11,22,33,44); sendBytes();
+    CHECK(Serial.output.size()==4+8*3+2);
+    CHECK(Serial.output[0]==0xC9 && Serial.output[1]==0xDA && Serial.output[2]==0 && Serial.output[3]==24);
+    CHECK(Serial.output[4]==55 && Serial.output[5]==66 && Serial.output[6]==77);
+    CHECK(Serial.output[28]==0x36 && Serial.output[29]=='\n');
+  }});
+  cases.push_back({"TPM2 output at its maximum RGB length remains well framed", [] {
+    strip.resizePixels(UINT16_MAX/3); sendBytes();
+    unsigned payload=(unsigned(Serial.output[2])<<8)|Serial.output[3];
+    CHECK(payload==UINT16_MAX && Serial.output.size()==payload+6);
+    CHECK(Serial.output[4+payload]==0x36);
+  }});
+  cases.push_back({"TPM2 output beyond its 16-bit limit never advertises a shorter body", [] {
+    strip.resizePixels(50000); sendBytes();
+    unsigned payload=(unsigned(Serial.output[2])<<8)|Serial.output[3];
+    CHECK(Serial.output.size()==payload+6 && payload%3==0);
+    CHECK(Serial.output[4+payload]==0x36);
+  }});
+  cases.push_back({"TPM2 ping stays silent when the TX pin is unavailable", [] {
+    serialCanTX=false; feed({0xC9,0xAA});
+    CHECK(Serial.output.empty()); serialCanTX=true;
+  }});
+  cases.push_back({"version query stays silent when the TX pin is unavailable", [] {
+    serialCanTX=false; feed({'v'});
+    CHECK(Serial.output.empty() && Serial.printCalls==0); serialCanTX=true;
+  }});
+  cases.push_back({"serial JSON allocation errors stay silent without the TX pin", [] {
+    serialCanTX=false; jsonLockAvailable=false; feed({'{'});
+    CHECK(Serial.output.empty() && Serial.printfCalls==0);
+  }});
+  cases.push_back({"serial version and JSON error replies remain enabled with TX", [] {
+    feed({'v'}); CHECK(Serial.printCalls==2 && Serial.output==std::vector<byte>{' '});
+    jsonLockAvailable=false; feed({'{'}); CHECK(Serial.printfCalls==1);
+  }});
+  cases.push_back({"TPM2 output stays silent without the TX pin", [] {
+    serialCanTX=false; sendBytes(); CHECK(Serial.output.empty());
+  }});
+  cases.push_back({"TPM2 readback saturates white addition instead of wrapping RGB", [] {
+    strip.colors[0]=RGBW32(240,100,0,128); sendBytes();
+    CHECK(Serial.output[4]==255 && Serial.output[5]==228 && Serial.output[6]==128);
   }});
   unsigned failures=0;
   for (const auto& entry : cases) {

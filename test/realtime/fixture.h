@@ -100,15 +100,16 @@ struct FakeSerial {
   std::deque<byte> input;
   std::vector<byte> output;
   bool connected=true;
+  unsigned printCalls=0, printfCalls=0;
   explicit operator bool() const { return connected; }
   unsigned available() const { return input.size(); }
   byte peek() const { return input.front(); }
   byte read() { byte b=input.front(); input.pop_front(); return b; }
   void write(byte b) { output.push_back(b); }
-  template<class T> void print(const T&) {}
-  template<class T> void println(const T&) {}
-  void println() {}
-  template<class... T> void printf_P(const char*, T...) {}
+  template<class T> void print(const T&) { printCalls++; }
+  template<class T> void println(const T&) { printCalls++; }
+  void println() { printCalls++; }
+  template<class... T> void printf_P(const char*, T...) { printfCalls++; }
   void setTimeout(unsigned) {}
 } Serial;
 
@@ -120,7 +121,8 @@ struct Document {
 } doc;
 Document* pDoc=&doc;
 struct DeserializationError { explicit operator bool() const { return true; } };
-bool requestJSONBufferLock(byte) { return true; }
+bool jsonLockAvailable=true;
+bool requestJSONBufferLock(byte) { return jsonLockAvailable; }
 void releaseJSONBufferLock() {}
 bool deserializeState(JsonObject) { return false; }
 DeserializationError deserializeJson(Document&, FakeSerial&) { return {}; }
@@ -130,4 +132,8 @@ void serializeJson(Document&, FakeSerial&) {}
 void handleImprovPacket() {}
 void updateBaudRate(uint32_t) {}
 static void sendJSON() {}
-static void sendBytes() {}
+static void sendBytes();
+
+inline byte highByte(unsigned value) { return value >> 8; }
+inline byte lowByte(unsigned value) { return value; }
+inline byte qadd8(byte a, byte b) { return std::min(unsigned(a)+b,255u); }
