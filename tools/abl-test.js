@@ -87,13 +87,18 @@ it('digital pixel readback and automatic brightness limiter regressions', t => {
   fixture = fixture.replace('/* POLYBUS */', poly);
 
   let source = fixture + '\n';
+  source += extractFunction(header, 'virtual void     setPixelColorCCT(')
+    .replace('virtual void     setPixelColorCCT(', 'void Bus::setPixelColorCCT(') + '\n';
   source += extractFunction(colors, 'uint16_t approximateKelvinFromRGB(') + '\n';
   source += extractFunction(colors, 'void colorKtoRGB(') + '\n';
   source += extractFunction(colors, 'uint32_t colorBalanceFromKelvin(') + '\n';
   source += extractFunction(colors, 'uint32_t IRAM_ATTR color_fade(') + '\n';
   for (const signature of ['void Bus::calculateCCT(', 'uint32_t Bus::autoWhiteCalc(',
     'void BusDigital::estimateCurrent(', 'void BusDigital::applyBriLimit(',
-    'void BusManager::setSegmentCCT(', 'void IRAM_ATTR BusManager::setPixelColor(', 'void IRAM_ATTR BusDigital::setPixelColor(', 'void BusPwm::setPixelColor(', 'void BusNetwork::setPixelColor(', 'void BusManager::initializeABL(', 'void BusManager::applyABL(']) {
+    'void BusManager::setSegmentCCT(', 'void IRAM_ATTR BusManager::setPixelColor(',
+    'void IRAM_ATTR BusDigital::setPixelColor(', 'void IRAM_ATTR BusDigital::setPixelColorCCT(', 'void IRAM_ATTR BusDigital::setPixelColorInternal(',
+    'void BusPwm::setPixelColor(', 'void BusPwm::setPixelColorCCT(', 'void BusPwm::setPixelColorInternal(',
+    'void BusNetwork::setPixelColor(', 'void BusManager::initializeABL(', 'void BusManager::applyABL(']) {
     source += extractFunction(bus, signature) + '\n';
   }
   source += extractFunction(fx, 'bool WS2812FX::hasRGBWBus(') + '\n';

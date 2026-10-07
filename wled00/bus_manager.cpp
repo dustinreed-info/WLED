@@ -270,10 +270,24 @@ void BusDigital::setStatusPixel(uint32_t c) {
 
 // note: using WLED_O2_ATTR makes this function ~7% faster at the expense of 600 bytes of flash
 void IRAM_ATTR BusDigital::setPixelColor(unsigned pix, uint32_t c) {
+  setPixelColorInternal(pix, c, nullptr);
+}
+
+// Native emitter values bypass temperature reconstruction while retaining RGB white extraction.
+void IRAM_ATTR BusDigital::setPixelColorCCT(unsigned pix, uint32_t c, uint16_t wwcw) {
+  setPixelColorInternal(pix, c, &wwcw);
+}
+
+// Share brightness, mapping and ABL accounting between legacy and native white input.
+void IRAM_ATTR BusDigital::setPixelColorInternal(unsigned pix, uint32_t c, const uint16_t* nativeWhites) {
   if (!_valid) return;
   uint8_t cctWW = 0, cctCW = 0;
   uint16_t wwcw = 0;
   if (hasWhite()) c = autoWhiteCalc(c, cctWW, cctCW);
+  if (nativeWhites && supportsNativeCCT()) {
+    cctWW = *nativeWhites;
+    cctCW = *nativeWhites >> 8;
+  }
   // Balance RGB after white extraction so tinting cannot change white output.
   if (Bus::getWhiteBalance() >= 1900) c = colorBalanceFromKelvin(Bus::getWhiteBalance(), c); // RGB correction
   c = color_fade(c, _bri, true); // apply brightness
@@ -478,9 +492,27 @@ BusPwm::BusPwm(const BusConfig &bc)
 }
 
 void BusPwm::setPixelColor(unsigned pix, uint32_t c) {
+  setPixelColorInternal(pix, c, nullptr);
+}
+
+bool BusPwm::supportsNativeCCT() const {
+  return hasCCT() && !cctICused;
+}
+
+// Accept the compositor's physical emitters without re-deriving them from CCT.
+void BusPwm::setPixelColorCCT(unsigned pix, uint32_t c, uint16_t wwcw) {
+  setPixelColorInternal(pix, c, &wwcw);
+}
+
+// Keep PWM channel routing and RGB correction shared for both white representations.
+void BusPwm::setPixelColorInternal(unsigned pix, uint32_t c, const uint16_t* nativeWhites) {
   if (pix != 0 || !_valid) return; //only react to first pixel
   uint8_t cctWW, cctCW;
   if (_type != TYPE_ANALOG_3CH) c = autoWhiteCalc(c, cctWW, cctCW);
+  if (nativeWhites && supportsNativeCCT()) {
+    cctWW = *nativeWhites;
+    cctCW = *nativeWhites >> 8;
+  }
   // Keep the extracted white level independent of RGB white balance.
   if (Bus::getWhiteBalance() >= 1900 && (_type == TYPE_ANALOG_3CH || _type == TYPE_ANALOG_4CH)) {
     c = colorBalanceFromKelvin(Bus::getWhiteBalance(), c); // RGB correction

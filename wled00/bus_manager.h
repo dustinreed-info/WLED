@@ -134,6 +134,9 @@ class Bus {
     virtual bool     canShow() const                            { return true; }
     virtual void     setStatusPixel(uint32_t c)                 {}
     virtual void     setPixelColor(unsigned pix, uint32_t c)    = 0;
+    // Explicit physical whites use the normal output pipeline (WW low byte, CW high byte).
+    virtual void     setPixelColorCCT(unsigned pix, uint32_t c, uint16_t wwcw) { setPixelColor(pix, c); }
+    virtual bool     supportsNativeCCT() const                  { return false; }
     virtual void     setBrightness(uint8_t b)                   { _bri = b; };
     virtual void     setColorOrder(uint8_t co)                  {}
     virtual uint32_t getPixelColor(unsigned pix) const          { return 0; }
@@ -260,6 +263,8 @@ class BusDigital : public Bus {
     bool canShow() const override;
     void setStatusPixel(uint32_t c) override;
     [[gnu::hot]] void setPixelColor(unsigned pix, uint32_t c) override;
+    [[gnu::hot]] void setPixelColorCCT(unsigned pix, uint32_t c, uint16_t wwcw) override;
+    bool supportsNativeCCT() const override { return hasCCT(); }
     void setColorOrder(uint8_t colorOrder) override;
     [[gnu::hot]] uint32_t getPixelColor(unsigned pix) const override;
     uint8_t  getColorOrder() const override  { return _colorOrder; }
@@ -281,6 +286,7 @@ class BusDigital : public Bus {
     static std::vector<LEDType> getLEDTypes();
 
   private:
+    void setPixelColorInternal(unsigned pix, uint32_t c, const uint16_t* nativeWhites);
     uint8_t  _skip;
     uint8_t  _colorOrder;
     uint8_t  _pins[2];
@@ -314,6 +320,8 @@ class BusPwm : public Bus {
     ~BusPwm() { cleanup(); }
 
     void setPixelColor(unsigned pix, uint32_t c) override;
+    void setPixelColorCCT(unsigned pix, uint32_t c, uint16_t wwcw) override;
+    bool supportsNativeCCT() const override;
     uint32_t getPixelColor(unsigned pix) const override; //does no index check
     size_t   getPins(uint8_t* pinArray = nullptr) const override;
     uint16_t getFrequency() const override { return _frequency; }
@@ -324,6 +332,7 @@ class BusPwm : public Bus {
     static std::vector<LEDType> getLEDTypes();
 
   private:
+    void setPixelColorInternal(unsigned pix, uint32_t c, const uint16_t* nativeWhites);
     uint8_t _pins[OUTPUT_MAX_PINS];
     uint8_t _data[OUTPUT_MAX_PINS];
     #ifdef ARDUINO_ARCH_ESP32

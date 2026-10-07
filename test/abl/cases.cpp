@@ -502,6 +502,61 @@ int main() {
     for (unsigned c=0;c<4;c++) CHECK(pwm._data[c]==network._data[c]);
     CHECK(pwm._data[3]==200);
   }});
+  checks.push_back({"native digital WW/CW input is independent of global temperature", [] {
+    for (uint8_t type : {TYPE_WS2805,TYPE_FW1906,TYPE_SM16825}) {
+      BusDigital bus(1,0,type); Bus::setCCT(255);
+      bus.setPixelColorCCT(0,RGBW32(11,22,33,200),uint16_t(100)<<8|200);
+      CHECK(bus.supportsNativeCCT());
+      const auto& p=bus.raw->pixels[0]; unsigned scale=type==TYPE_SM16825 ? 257 : 1;
+      CHECK(p.WW==200*scale && p.CW==100*scale && p.R==11*scale && p.G==22*scale && p.B==33*scale);
+    }
+  }});
+  checks.push_back({"native whites share brightness and ABL scaling", [] {
+    BusDigital bus(1); bus.setBrightness(128);
+    bus.setPixelColorCCT(0,RGBW32(0,0,0,200),uint16_t(100)<<8|200);
+    CHECK(bus.raw->pixels[0].WW==100 && bus.raw->pixels[0].CW==50);
+    CHECK(bus._colorSum==150); bus.estimateCurrent();
+    CHECK(bus.getUsedCurrent()==7);
+    bus.applyBriLimit(128);
+    CHECK(bus.raw->pixels[0].WW==50 && bus.raw->pixels[0].CW==25);
+  }});
+  checks.push_back({"native whites preserve reversed skipped output routing and white swaps", [] {
+    BusDigital bus(3,2); bus._reversed=true; bus._colorOrder=0x40;
+    bus.setPixelColorCCT(0,RGBW32(0,0,0,200),uint16_t(100)<<8|200);
+    CHECK(bus.raw->pixels[4].WW==100 && bus.raw->pixels[4].CW==200);
+    CHECK(bus.raw->pixels[0].WW==0 && bus.raw->pixels[0].CW==0);
+    bus.applyBriLimit(128);
+    CHECK(bus.raw->pixels[4].WW==50 && bus.raw->pixels[4].CW==100);
+  }});
+  checks.push_back({"native CCT calls preserve ordinary RGBW output semantics", [] {
+    BusDigital ordinary(1,0,TYPE_SK6812_RGBW), native(1,0,TYPE_SK6812_RGBW);
+    uint32_t c=RGBW32(11,22,33,200);
+    ordinary.setPixelColor(0,c); native.setPixelColorCCT(0,c,0);
+    const auto& a=ordinary.raw->pixels[0]; const auto& b=native.raw->pixels[0];
+    CHECK(!native.supportsNativeCCT() && a.R==b.R && a.G==b.G && a.B==b.B && a.W==b.W);
+  }});
+  checks.push_back({"native digital input retains auto-white RGB subtraction and RGB tint", [] {
+    BusDigital bus(1); bus._autoWhiteMode=RGBW_MODE_AUTO_ACCURATE;
+    Bus::setCCT(-1); Bus::setWhiteBalance(1900);
+    bus.setPixelColorCCT(0,RGBW32(100,60,20,0),uint16_t(70)<<8|30);
+    const auto& p=bus.raw->pixels[0];
+    CHECK(p.R==80 && p.G>0 && p.G<40 && p.B==0 && p.WW==30 && p.CW==70);
+  }});
+  checks.push_back({"native PWM input routes both emitters for RGB+CCT and white-only outputs", [] {
+    for (uint8_t type : {TYPE_ANALOG_2CH,TYPE_ANALOG_5CH}) {
+      BusPwm bus(type); Bus::setCCT(255);
+      bus.setPixelColorCCT(0,RGBW32(11,22,33,200),uint16_t(100)<<8|200);
+      CHECK(bus.supportsNativeCCT());
+      if (type==TYPE_ANALOG_2CH) CHECK(bus._data[0]==200 && bus._data[1]==100);
+      else CHECK(bus._data[0]==11 && bus._data[1]==22 && bus._data[2]==33 && bus._data[3]==200 && bus._data[4]==100);
+    }
+  }});
+  checks.push_back({"CCT-control IC outputs retain their supported legacy route", [] {
+    BusPwm bus(TYPE_ANALOG_2CH); bus.cctICused=true; Bus::setCCT(64);
+    CHECK(!bus.supportsNativeCCT());
+    bus.setPixelColorCCT(0,RGBW32(0,0,0,200),uint16_t(100)<<8|200);
+    CHECK(bus._data[0]==200 && bus._data[1]==64);
+  }});
   unsigned failures=0;
   for (const auto& check : checks) {
     resetState();

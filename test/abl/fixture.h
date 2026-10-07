@@ -122,6 +122,8 @@ public:
   bool isOffRefreshRequired() const { return false; }
   bool isPWM() const { return false; }
   virtual void setPixelColor(unsigned, uint32_t)=0;
+  virtual void setPixelColorCCT(unsigned, uint32_t, uint16_t);
+  virtual bool supportsNativeCCT() const { return false; }
   virtual void begin() { begun=true; }
   virtual void setBrightness(uint8_t) {}
   virtual uint16_t getLEDCurrent() const = 0;
@@ -210,6 +212,9 @@ public:
   void estimateCurrent();
   void applyBriLimit(uint8_t);
   void setPixelColor(unsigned, uint32_t);
+  void setPixelColorCCT(unsigned, uint32_t, uint16_t);
+  void setPixelColorInternal(unsigned, uint32_t, const uint16_t*);
+  bool supportsNativeCCT() const override { return hasCCT(); }
 };
 
 // Single-pixel fixtures for the real PWM and virtual RGBW setters.
@@ -226,6 +231,9 @@ public:
   bool cctICused=false;
   explicit BusPwm(uint8_t type=TYPE_ANALOG_4CH) { _type=type; _hasCCT=hasCCT(); }
   void setPixelColor(unsigned, uint32_t);
+  void setPixelColorCCT(unsigned, uint32_t, uint16_t);
+  void setPixelColorInternal(unsigned, uint32_t, const uint16_t*);
+  bool supportsNativeCCT() const override { return hasCCT() && !cctICused; }
 };
 class BusNetwork : public FakeSingleOutput {
 public:
