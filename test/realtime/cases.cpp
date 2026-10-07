@@ -1,6 +1,6 @@
 #define CHECK(x) do { if (!(x)) throw std::runtime_error(#x); } while(0)
 static void reset() {
-  strip=Strip{}; Serial.input.clear(); realtimeRespectLedMaps=true; e131SkipOutOfSequence=true;
+  strip=Strip{}; Serial.input.clear(); Serial.output.clear(); realtimeRespectLedMaps=true; e131SkipOutOfSequence=true;
   realtimeOverride=0; realtimeMode=0; realtimeTimeout=0;
   useMainSegmentOnly=false; arlsOffset=0; DMXAddress=1;
   e131NewData=false; std::fill(std::begin(e131LastSequenceNumber),std::end(e131LastSequenceNumber),0);
@@ -297,6 +297,40 @@ int main() {
     p.sequenceNum=1; p.flags&=~DDP_FLAGS_PUSH; p.data[0]=99;
     handleDDPPacket(&p,DDP_HEADER_LEN+4);
     CHECK(e131NewData && R(strip.colors[0])==99);
+  }});
+  cases.push_back({"repeated Adalight first header byte recovers the overlapping prefix", [] {
+    feed({'A','A','d','a',0,0,0x55,11,22,33});
+    CHECK(strip.shows==1 && strip.shown[0]==RGBW32(11,22,33,0));
+  }});
+  cases.push_back({"partial Adalight prefix can restart at its next first byte", [] {
+    feed({'A','d','A','d','a',0,0,0x55,11,22,33});
+    CHECK(strip.shows==1 && strip.shown[0]==RGBW32(11,22,33,0));
+  }});
+  cases.push_back({"TPM2 can follow an interrupted Adalight prefix", [] {
+    feed({'A',0xC9,0xDA,0,3,11,22,33,0x36});
+    CHECK(strip.shows==1 && strip.shown[0]==RGBW32(11,22,33,0));
+  }});
+  cases.push_back({"repeated TPM2 start bytes recover the overlapping prefix", [] {
+    feed({0xC9,0xC9,0xDA,0,3,11,22,33,0x36});
+    CHECK(strip.shows==1 && strip.shown[0]==RGBW32(11,22,33,0));
+  }});
+  cases.push_back({"Adalight can follow an interrupted TPM2 prefix", [] {
+    feed({0xC9,'A','d','a',0,0,0x55,11,22,33});
+    CHECK(strip.shows==1 && strip.shown[0]==RGBW32(11,22,33,0));
+  }});
+  cases.push_back({"failed Adalight checksum can contain the next valid frame prefix", [] {
+    feed({'A','d','a',0,0,'A','d','a',0,0,0x55,11,22,33});
+    CHECK(strip.shows==1 && strip.shown[0]==RGBW32(11,22,33,0));
+  }});
+  cases.push_back({"valid Adalight checksum equal to A is still treated as a checksum", [] {
+    std::vector<byte> bytes={'A','d','a',0,20,0x41};
+    for (unsigned i=0;i<21;i++) bytes.insert(bytes.end(),{11,22,33});
+    feed(bytes); CHECK(strip.shows==1 && strip.shown[0]==RGBW32(11,22,33,0));
+  }});
+  cases.push_back({"TPM2 ping acknowledgement remains intact during header recovery", [] {
+    feed({0xC9,0xAA,0xC9,0xDA,0,3,11,22,33,0x36});
+    CHECK(Serial.output==std::vector<byte>{0xAC});
+    CHECK(strip.shows==1 && strip.shown[0]==RGBW32(11,22,33,0));
   }});
   unsigned failures=0;
   for (const auto& entry : cases) {

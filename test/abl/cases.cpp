@@ -324,12 +324,12 @@ int main() {
           BusDigital bus(3,2,TYPE_SK6812_RGBW);
           bus._iType=parallel ? I_32_I2_NEO_4 : I_32_RN_NEO_4;
           PolyBus::_useParallelI2S=parallel; bus._colorOrder=order|(swap<<4); bus._reversed=true;
-          for (unsigned i=0;i<3;i++) bus.setPixelColor(i,RGBW32(200,0,0,180));
-          for (unsigned i=2;i<5;i++) CHECK(PolyBus::getPixelColor(bus._busPtr,bus._iType,i,bus._colorOrder)==RGBW32(200,0,0,180));
+          for (unsigned i=0;i<3;i++) bus.setPixelColor(i,RGBW32(200,100,20,180));
+          for (unsigned i=2;i<5;i++) CHECK(PolyBus::getPixelColor(bus._busPtr,bus._iType,i,bus._colorOrder)==RGBW32(200,100,20,180));
           bus.applyBriLimit(128);
           for (unsigned i=2;i<5;i++) {
             uint32_t c=PolyBus::getPixelColor(bus._busPtr,bus._iType,i,bus._colorOrder);
-            CHECK(R(c)>0 && R(c)<200 && G(c)==0 && B(c)==0 && W(c)>0 && W(c)<180);
+            CHECK(R(c)>G(c) && G(c)>B(c) && B(c)>0 && R(c)<200 && W(c)>0 && W(c)<180);
           }
           for (unsigned i=0;i<2;i++) CHECK(PolyBus::getPixelColor(bus._busPtr,bus._iType,i,bus._colorOrder)==0);
         }
