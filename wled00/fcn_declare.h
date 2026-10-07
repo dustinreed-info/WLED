@@ -306,7 +306,7 @@ uint8_t realtimeBroadcast(uint8_t type, IPAddress client, uint16_t length, const
 void realtimeLock(uint32_t timeoutMs, byte md = REALTIME_MODE_GENERIC);
 void exitRealtime();
 void handleNotifications();
-void setRealtimePixel(uint16_t i, byte r, byte g, byte b, byte w);
+void setRealtimePixel(uint32_t i, byte r, byte g, byte b, byte w);
 void refreshNodeList();
 void sendSysInfoUDP();
 #ifndef WLED_DISABLE_ESPNOW
