@@ -96,6 +96,7 @@ template <class Color> struct FakeNeoBus : FakeRaw {
 
 class Bus {
 public:
+  static constexpr uint8_t NO_DRIVER=0;
   static int16_t _cct;
   static int8_t _cctBlend;
   static uint8_t _gAWM;

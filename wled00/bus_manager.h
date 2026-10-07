@@ -112,6 +112,8 @@ typedef struct {
 //parent class of BusDigital, BusPwm, and BusNetwork
 class Bus {
   public:
+    static constexpr uint8_t NO_DRIVER = 0;
+
     Bus(uint8_t type, uint16_t start, uint8_t aw, uint16_t len = 1, bool reversed = false, bool refresh = false)
     : _type(type)
     , _bri(255)

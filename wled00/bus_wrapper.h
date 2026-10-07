@@ -21,7 +21,7 @@
 #define P_32_VS_CLK    18
 
 //The dirty list of possible bus types. Quite a lot...
-#define I_NONE 0
+#define I_NONE Bus::NO_DRIVER
 //ESP8266 RGB
 #define I_8266_U0_NEO_3 1
 #define I_8266_U1_NEO_3 2

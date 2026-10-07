@@ -1265,13 +1265,13 @@ void WS2812FX::finalizeInit() {
     bus.iType = BusManager::getI(bus.type, bus.pins, bus.driverType);
   }
   for (auto &bus : busConfigs) {
-    bool use_placeholder = Bus::isDigital(bus.type) && bus.iType == I_NONE;
+    bool use_placeholder = Bus::isDigital(bus.type) && bus.iType == Bus::NO_DRIVER;
     if (use_placeholder) errorFlag = ERR_NOT_IMPL;
     unsigned busMemUsage = bus.memUsage(); // does not include DMA/RMT buffer but includes pixel buffers (segment buffer + global buffer)
     mem += busMemUsage;
     // estimate maximum I2S memory usage (only relevant for digital non-2pin busses when I2S is enabled)
     #if defined(WLED_HAS_PARALLEL_I2S)
-    bool usesI2S = bus.iType != I_NONE && (bus.iType & 0x01) == 0; // I2S bus types are even numbered, can't use bus.driverType == 1 as getI() may have defaulted to RMT
+    bool usesI2S = bus.iType != Bus::NO_DRIVER && (bus.iType & 0x01) == 0; // I2S bus types are even numbered, can't use bus.driverType == 1 as getI() may have defaulted to RMT
     if (Bus::isDigital(bus.type) && !Bus::is2Pin(bus.type) && usesI2S) {
       #ifdef NPB_CONF_4STEP_CADENCE
       constexpr unsigned stepFactor = 4; // 4 step cadence (4 bits per pixel bit)
