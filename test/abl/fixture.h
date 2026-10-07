@@ -146,6 +146,8 @@ uint32_t color_fade(uint32_t, uint8_t, bool);
 uint32_t colorBalanceFromKelvin(int, uint32_t c) { return c; }
 struct FakeColorMap { uint8_t getPixelColorOrder(unsigned, uint8_t co) { return co; } } _colorOrderMap;
 uint8_t bri=77;
+byte realtimeMode=REALTIME_MODE_INACTIVE, realtimeOverride=REALTIME_OVERRIDE_NONE;
+bool useMainSegmentOnly=false;
 uint8_t scaledBri(uint8_t b) { return b; }
 
 constexpr uint32_t BFRALLOC_PREFER_PSRAM=1;
@@ -204,6 +206,7 @@ public:
   inline static unsigned maxWidth=1;
   unsigned start=0, stop=1, startY=0, stopY=1;
   mutable unsigned _capabilities=0;
+  uint8_t cct=127;
   bool isActive() const { return stop>start; }
   void refreshLightCapabilities() const;
 };
@@ -215,6 +218,8 @@ public:
   unsigned _length=8;
   bool _hasWhiteChannel=false, _isOffRefreshRequired=false;
   std::vector<Segment> _segments;
+  uint8_t _mainSegment=0;
+  const Segment& getMainSegment() const { return _segments[_mainSegment]; }
   ~WS2812FX() { releaseCCT(); }
   void releaseCCT() { p_free(_pixelCCT); _pixelCCT=nullptr; _pixelCCTSize=0; }
   size_t getLengthTotal() const { return length; }

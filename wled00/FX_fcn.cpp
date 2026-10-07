@@ -1363,7 +1363,13 @@ bool WS2812FX::updateCCTBuffer() {
     }
     _pixelCCTSize = length;
   }
-  memset(_pixelCCT, 127, length);
+  uint8_t defaultCCT = 127;
+  if (realtimeMode != REALTIME_MODE_INACTIVE && !useMainSegmentOnly && !realtimeOverride && !_segments.empty()) {
+    // Full-strip input bypasses segment blending; use the configured main CCT.
+    // Effect transition progress is not advanced while streaming the full strip.
+    defaultCCT = getMainSegment().cct;
+  }
+  memset(_pixelCCT, defaultCCT, length);
   return true;
 }
 

@@ -38,7 +38,7 @@ it('digital pixel readback and automatic brightness limiter regressions', t => {
   const fxHeader = read('FX.h');
 
   const defines = [constants, wrapper, fxHeader].flatMap(source => source.split('\n').filter(line =>
-    /^#define (?:TYPE_\w+|RGBW_MODE_\w+|AW_GLOBAL_DISABLED|COL_ORDER_\w+|I_\w+|SEG_CAPABILITY_\w+)\s/.test(line)
+    /^#define (?:TYPE_\w+|RGBW_MODE_\w+|AW_GLOBAL_DISABLED|COL_ORDER_\w+|I_\w+|SEG_CAPABILITY_\w+|REALTIME_MODE_\w+|REALTIME_OVERRIDE_\w+)\s/.test(line)
   )).join('\n');
   const aliases = [...wrapper.matchAll(/^#define (B_(?:32|HS|SS)_\w+)\s+NeoPixelBus/gm)].map(([, name]) => {
     let color = 'RgbColor';

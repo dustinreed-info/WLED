@@ -12,6 +12,8 @@ static void resetState() {
   BusManager::_gMilliAmpsMax=0; BusManager::_gMilliAmpsUsed=0;
   PolyBus::resetChannelTracking();
   strip.cctFromRgb=false; strip.correctWB=false;
+  realtimeMode=REALTIME_MODE_INACTIVE; realtimeOverride=REALTIME_OVERRIDE_NONE;
+  useMainSegmentOnly=false; strip._mainSegment=0;
 }
 
 static void checkColorReadback(uint8_t type) {
@@ -269,6 +271,51 @@ int main() {
     CHECK(strip._length==24 && strip._hasWhiteChannel);
     CHECK(validPtr->begun && validPtr->_bri==bri);
     CHECK(!badPtr->begun && !overPtr->begun);
+  }});
+  checks.push_back({"full-strip realtime uses the chosen main segment temperature", [] {
+    BusManager::busses.push_back(std::make_unique<BusDigital>(8));
+    strip._segments.resize(2); strip._mainSegment=1;
+    strip._segments[0].cct=127;
+    for (byte mode : {REALTIME_MODE_DDP, REALTIME_MODE_ADALIGHT, REALTIME_MODE_HYPERION, REALTIME_MODE_E131}) {
+      realtimeMode=mode;
+      for (uint8_t cct : {0, 64, 255}) {
+        strip._segments[1].cct=cct;
+        CHECK(strip.updateCCTBuffer());
+        for (size_t i=0;i<strip.length;i++) CHECK(strip._pixelCCT[i]==cct);
+        auto* bus=static_cast<BusDigital*>(BusManager::getBus(0));
+        Bus::_cct=strip._pixelCCT[0]; bus->setPixelColor(0,RGBW32(0,0,0,255));
+        CHECK(bus->raw->pixels[0].WW==255-cct && bus->raw->pixels[0].CW==cct);
+      }
+    }
+    CHECK(cctAllocations==1);
+  }});
+  checks.push_back({"effects and overridden streams reset their CCT before blending", [] {
+    BusManager::busses.push_back(std::make_unique<BusDigital>(8));
+    strip._segments.resize(1); strip._segments[0].cct=0;
+    realtimeMode=REALTIME_MODE_DDP;
+    CHECK(strip.updateCCTBuffer() && strip._pixelCCT[0]==0);
+    useMainSegmentOnly=true;
+    CHECK(strip.updateCCTBuffer() && strip._pixelCCT[0]==127);
+    useMainSegmentOnly=false;
+    for (byte overrideMode : {REALTIME_OVERRIDE_ONCE, REALTIME_OVERRIDE_ALWAYS}) {
+      realtimeOverride=overrideMode;
+      CHECK(strip.updateCCTBuffer() && strip._pixelCCT[0]==127);
+    }
+    realtimeOverride=REALTIME_OVERRIDE_NONE; realtimeMode=REALTIME_MODE_INACTIVE;
+    CHECK(strip.updateCCTBuffer() && strip._pixelCCT[0]==127);
+  }});
+  checks.push_back({"full-strip white balance uses the configured CCT on RGB outputs", [] {
+    BusManager::busses.push_back(std::make_unique<BusDigital>(8,0,TYPE_SK6812_RGBW));
+    strip.correctWB=true; strip._segments.resize(1); strip._segments[0].cct=64;
+    realtimeMode=REALTIME_MODE_DDP;
+    CHECK(strip.updateCCTBuffer() && strip._pixelCCT[7]==64);
+    strip.cctFromRgb=true;
+    CHECK(strip.updateCCTBuffer() && !strip._pixelCCT);
+  }});
+  checks.push_back({"full-strip realtime tolerates an absent segment list", [] {
+    BusManager::busses.push_back(std::make_unique<BusDigital>(8));
+    realtimeMode=REALTIME_MODE_DDP;
+    CHECK(strip.updateCCTBuffer() && strip._pixelCCT[0]==127);
   }});
   unsigned failures=0;
   for (const auto& check : checks) {
