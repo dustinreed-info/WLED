@@ -268,6 +268,7 @@ public:
   inline static int clipStartX=0, clipStopX=0, clipStartY=0, clipStopY=0;
   bool isInTransition() const { return oldSegment!=nullptr; }
   bool isActive() const { return stop>start; }
+  void deactivate() { start=0; stop=0; }
   unsigned width() const { return stop-start; }
   unsigned height() const { return stopY-startY; }
   unsigned length() const { return width()*height(); }
@@ -291,6 +292,7 @@ class WS2812FX {
 public:
   bool cctFromRgb=false, correctWB=false;
   bool isMatrix=false;
+  bool servicing=false;
   uint32_t _pixelStorage[8]={};
   uint32_t* _pixels=_pixelStorage;
   void paintFrame();
@@ -323,5 +325,11 @@ public:
   bool hasRGBWBus() const;
   bool checkSegmentAlignment() const;
   void initializeOutputs();
+  bool isServicing() const { return servicing; }
+  size_t getSegmentsNum() const { return _segments.size(); }
+  void setMainSegmentId(unsigned n);
+  uint8_t getLastActiveSegmentId() const;
+  void fixInvalidSegments();
+  void purgeSegments();
   unsigned getMappedPixelIndex(unsigned n) const { return n; }
 } strip;

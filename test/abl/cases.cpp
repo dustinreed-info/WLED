@@ -15,6 +15,7 @@ static void resetState() {
   realtimeMode=REALTIME_MODE_INACTIVE; realtimeOverride=REALTIME_OVERRIDE_NONE;
   useMainSegmentOnly=false; strip._mainSegment=0;
   strip.isMatrix=false; Segment::maxWidth=1; Segment::maxHeight=1;
+  strip.servicing=false;
   blendingStyle=TRANSITION_FADE; bri=briOld=briT=77;
   gammaCorrectCol=false;
   NeoGammaWLEDMethod::calcGammaTable(2.8f);
@@ -728,6 +729,76 @@ int main() {
     CHECK(out->raw->pixels[0].WW+out->raw->pixels[0].CW>=18 && out->raw->pixels[0].WW+out->raw->pixels[0].CW<=20);
     out->_autoWhiteMode=5; renderWhiteLayers();
     CHECK(out->getEffectiveAutoWhiteMode()==RGBW_MODE_AUTO_BRIGHTER);
+  }});
+  checks.push_back({"primary segment bounds follow a shrunken strip canvas", [] {
+    strip._segments.resize(1); strip._segments[0].stop=9; Segment::maxWidth=8;
+    strip.fixInvalidSegments();
+    CHECK(strip._segments.size()==1 && strip._segments[0].stop==8);
+    CHECK(strip.updateCCTBuffer() && strip.updateWhiteBuffers());
+    strip.blendSegment(strip._segments[0]);
+  }});
+  checks.push_back({"invalid primary segment is deactivated while retaining its slot", [] {
+    strip._segments.resize(2); strip._segments[0].start=8; strip._segments[0].stop=10;
+    strip._segments[1].start=1; strip._segments[1].stop=5;
+    strip.fixInvalidSegments();
+    CHECK(strip._segments.size()==2 && !strip._segments[0].isActive());
+    CHECK(strip._segments[1].start==1 && strip._segments[1].stop==5);
+    CHECK(strip._mainSegment==1);
+  }});
+  checks.push_back({"primary matrix dimensions are clamped after a canvas change", [] {
+    strip.isMatrix=true; Segment::maxWidth=4; Segment::maxHeight=2;
+    strip._segments.resize(1); strip._segments[0].stop=5; strip._segments[0].stopY=3;
+    strip.fixInvalidSegments();
+    CHECK(strip._segments[0].stop==4 && strip._segments[0].stopY==2);
+    CHECK(strip.updateCCTBuffer() && strip.updateWhiteBuffers());
+    strip.blendSegment(strip._segments[0]);
+  }});
+  checks.push_back({"invalid primary matrix row is deactivated without erasing index zero", [] {
+    strip.isMatrix=true; Segment::maxWidth=4; Segment::maxHeight=2;
+    strip._segments.resize(1); strip._segments[0].startY=2; strip._segments[0].stopY=3;
+    strip.fixInvalidSegments();
+    CHECK(strip._segments.size()==1 && !strip._segments[0].isActive());
+  }});
+  checks.push_back({"primary matrix trailing strip is clamped to logical canvas length", [] {
+    strip.isMatrix=true; Segment::maxWidth=2; Segment::maxHeight=2;
+    strip._segments.resize(1); strip._segments[0].start=4; strip._segments[0].stop=10;
+    strip.fixInvalidSegments();
+    CHECK(strip._segments[0].start==4 && strip._segments[0].stop==8);
+    strip._segments[0].startY=1; strip._segments[0].stopY=2;
+    strip.fixInvalidSegments(); CHECK(!strip._segments[0].isActive());
+  }});
+  checks.push_back({"segment bounds validation tolerates an empty segment list", [] {
+    strip.fixInvalidSegments(); CHECK(strip._segments.empty());
+  }});
+  checks.push_back({"segment validation removes invalid secondary slots and preserves custom ranges", [] {
+    strip._segments.resize(4);
+    strip._segments[0].start=1; strip._segments[0].stop=5;
+    strip._segments[1].start=3; strip._segments[1].stop=9;
+    strip._segments[2].start=8; strip._segments[2].stop=9;
+    strip._segments[3].stop=0;
+    strip.fixInvalidSegments();
+    CHECK(strip._segments.size()==2 && strip._segments[0].start==1 && strip._segments[0].stop==5);
+    CHECK(strip._segments[1].start==3 && strip._segments[1].stop==8);
+  }});
+  checks.push_back({"segment geometry remains unchanged while effects are being serviced", [] {
+    strip._segments.resize(1); strip._segments[0].stop=9; strip.servicing=true;
+    strip.fixInvalidSegments(); CHECK(strip._segments[0].stop==9);
+  }});
+  checks.push_back({"removing invalid secondary segments preserves the selected main segment", [] {
+    strip._segments.resize(3); strip._mainSegment=2;
+    strip._segments[1].start=8; strip._segments[1].stop=10;
+    strip._segments[2].start=4; strip._segments[2].stop=6;
+    strip.fixInvalidSegments();
+    CHECK(strip._segments.size()==2 && strip._mainSegment==1 && strip.getMainSegment().start==4);
+    strip._segments[1].start=8; strip._segments[1].stop=10;
+    strip.fixInvalidSegments();
+    CHECK(strip._segments.size()==1 && strip._mainSegment==0);
+  }});
+  checks.push_back({"sparse matrix trailing bounds use logical length beyond physical outputs", [] {
+    strip.isMatrix=true; Segment::maxWidth=2; Segment::maxHeight=2; strip.length=12;
+    strip._segments.resize(1); strip._segments[0].start=8; strip._segments[0].stop=14;
+    strip.fixInvalidSegments();
+    CHECK(strip._segments[0].start==8 && strip._segments[0].stop==12);
   }});
   unsigned failures=0;
   for (const auto& check : checks) {
