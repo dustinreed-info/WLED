@@ -2,6 +2,7 @@
 
 // forward declarations
 static void sendBytes();
+static constexpr byte TPM2_FRAME_END = 0x36;
 
 /*
  * Adalight and TPM2 handler
@@ -20,6 +21,7 @@ enum class AdaState {
   TPM2_Header_Type,
   TPM2_Header_CountHi,
   TPM2_Header_CountLo,
+  TPM2_Footer,
 };
 
 // Recognize a fresh frame prefix after an invalid or overlapping header.
@@ -28,6 +30,95 @@ static AdaState getSerialHeaderState(byte next) {
   if (next == 0xC9) return AdaState::TPM2_Header_Type;
   return AdaState::Header_A;
 }
+
+// Cache a candidate RGB frame separately from the live buffers used by rendering.
+// Only its in-bounds, offset-clipped span consumes RAM; all serial bytes are consumed.
+class SerialFrameBuffer {
+  public:
+    ~SerialFrameBuffer() { clear(); }
+
+    // Capture stream geometry once so configuration changes cannot move a partial frame.
+    void begin(uint32_t pixelCount) {
+      _valid = false;
+      _mainOnly = useMainSegmentOnly;
+      _mainSegmentId = strip.getMainSegmentId();
+      _offset = arlsOffset;
+      if (_mainOnly && _mainSegmentId >= strip.getSegmentsNum()) {
+        errorFlag = ERR_NORAM_PX;
+        return;
+      }
+      if (_mainOnly && !strip.getMainSegment().isActive()) return;
+      _length = _mainOnly ? strip.getMainSegment().length() : strip.getLengthTotal();
+      int64_t first = std::max(int64_t(0), int64_t(_offset));
+      int64_t end = std::min(int64_t(_length), int64_t(pixelCount) + _offset);
+      _start = unsigned(std::min(first, int64_t(_length)));
+      _span = end > first ? unsigned(end - first) : 0;
+      if (_span > _capacity) {
+        p_free(_pixels);
+        _pixels = nullptr;
+        _capacity = 0;
+        _pixels = static_cast<uint32_t*>(allocate_buffer(size_t(_span) * sizeof(uint32_t), BFRALLOC_PREFER_PSRAM | BFRALLOC_NOBYTEACCESS));
+        if (!_pixels) {
+          errorFlag = ERR_NORAM_PX;
+          return;
+        }
+        _capacity = _span;
+      }
+      _valid = true;
+    }
+
+    // RGB serial data has no white byte, leaving the top bit available for an override marker.
+    void setPixel(uint32_t streamPixel, uint32_t color) {
+      if (!_valid) return;
+      int64_t pixel = int64_t(streamPixel) + _offset - _start;
+      if (pixel < 0 || uint64_t(pixel) >= _span) return;
+      _pixels[unsigned(pixel)] = realtimeOverride ? SKIPPED_PIXEL : color;
+    }
+
+    // Initialize takeover before applying a validated frame, never after writing its pixels.
+    void commit() {
+      if (!_valid) return;
+      _valid = false;
+      if (_mainOnly != useMainSegmentOnly || _offset != arlsOffset) return;
+      if (_mainOnly && (_mainSegmentId != strip.getMainSegmentId() || _mainSegmentId >= strip.getSegmentsNum())) return;
+      if (_mainOnly && !strip.getMainSegment().isActive()) return;
+      unsigned length = _mainOnly ? strip.getMainSegment().length() : strip.getLengthTotal();
+      if (_length != length) return;
+      if (!realtimeOverride) {
+        // Save overridden pixels before takeover clears the old scene. These are full RGBW
+        // values, so do not interpret their top bit as a marker again after this pass.
+        for (unsigned i = 0; i < _span; i++) {
+          if (_pixels[i] == SKIPPED_PIXEL) _pixels[i] = strip.getRealtimePixelColor(_start + i);
+        }
+      }
+      realtimeLock(realtimeTimeoutMs, REALTIME_MODE_ADALIGHT);
+      if (realtimeOverride) return;
+      for (unsigned i = 0; i < _span; i++) strip.setRealtimePixelColor(_start + i, _pixels[i]);
+      strip.show();
+    }
+
+    // Keep an existing serial stream alive while a long candidate frame arrives.
+    void refreshTimeout() const {
+      if (_valid && realtimeMode == REALTIME_MODE_ADALIGHT) realtimeLock(realtimeTimeoutMs, REALTIME_MODE_ADALIGHT);
+    }
+
+    // Release cached storage on inactivity/disconnection; the displayed pixels are independent.
+    void clear() {
+      p_free(_pixels);
+      _pixels = nullptr;
+      _capacity = 0;
+      _valid = false;
+    }
+
+  private:
+    static constexpr uint32_t SKIPPED_PIXEL = 0x80000000;
+    uint32_t *_pixels = nullptr;
+    unsigned _capacity = 0, _span = 0, _start = 0, _length = 0;
+    int _offset = 0;
+    byte _mainSegmentId = 0;
+    bool _mainOnly = false, _valid = false;
+};
+static SerialFrameBuffer serialFrame;
 
 static uint16_t currentBaud = 1152; //default baudrate 115200 (divided by 100)
 static bool continuousSendLED = false;
@@ -73,14 +164,12 @@ static void sendBytes(){
       Serial.write(qadd8(W(c), G(c))); //G
       Serial.write(qadd8(W(c), B(c))); //B
     }
-    Serial.write(0x36); Serial.write('\n');
+    Serial.write(TPM2_FRAME_END); Serial.write('\n');
   }
 }
 
 void handleSerial()
 {
-  if (!(serialCanRX && Serial)) return; // arduino docs: `if (Serial)` indicates whether or not the USB CDC serial connection is open. For all non-USB CDC ports, this will always return true
-
   static auto state = AdaState::Header_A;
   static uint32_t count = 0; // Adalight encodes count-1, so 0xFFFF represents 65536 pixels
   static uint32_t pixel = 0;
@@ -88,11 +177,21 @@ void handleSerial()
   static byte red   = 0x00;
   static byte green = 0x00;
   static uint32_t lastByteTime = 0;
+  static bool tpm2Frame = false;
   constexpr uint32_t SERIAL_FRAME_IDLE_TIMEOUT_MS = 1000;
+
+  if (!(serialCanRX && Serial)) { // USB CDC can disconnect; non-USB ports always evaluate true
+    serialFrame.clear();
+    state = AdaState::Header_A;
+    count = 0;
+    pixel = 0;
+    return;
+  }
 
   // An interrupted frame must not consume the next connection's header as RGB.
   // Use inactivity rather than total duration so large slow frames remain valid.
-  if (state != AdaState::Header_A && millis() - lastByteTime > SERIAL_FRAME_IDLE_TIMEOUT_MS) {
+  if (millis() - lastByteTime > SERIAL_FRAME_IDLE_TIMEOUT_MS) {
+    serialFrame.clear();
     state = AdaState::Header_A;
     count = 0;
     pixel = 0;
@@ -167,7 +266,8 @@ void handleSerial()
         break;
       case AdaState::Header_CountCheck:
         if (check == next) {
-          realtimeLock(realtimeTimeoutMs, REALTIME_MODE_ADALIGHT);
+          serialFrame.begin(count);
+          tpm2Frame = false;
           state = AdaState::Data_Red;
         }
         else               state = getSerialHeaderState(next);
@@ -188,7 +288,8 @@ void handleSerial()
           state = AdaState::Header_A; // only complete 24-bit RGB pixels are supported
         } else {
           count /= 3;
-          realtimeLock(realtimeTimeoutMs, REALTIME_MODE_ADALIGHT);
+          serialFrame.begin(count);
+          tpm2Frame = true;
           state = AdaState::Data_Red;
         }
         break;
@@ -200,17 +301,22 @@ void handleSerial()
         green = next;
         state = AdaState::Data_Blue;
         break;
-      case AdaState::Data_Blue:
+      case AdaState::Data_Blue: {
         byte blue  = next;
-        if (!realtimeOverride) setRealtimePixel(pixel, red, green, blue, 0);
+        serialFrame.setPixel(pixel, RGBW32(red, green, blue, 0));
         pixel++; // consume positions even while realtime output is overridden
         if (--count > 0) state = AdaState::Data_Red;
+        else if (tpm2Frame) state = AdaState::TPM2_Footer;
         else {
-          realtimeLock(realtimeTimeoutMs, REALTIME_MODE_ADALIGHT);
-
-          if (!realtimeOverride) strip.show();
+          serialFrame.commit();
           state = AdaState::Header_A;
         }
+        break;
+      }
+      case AdaState::TPM2_Footer:
+        if (next == TPM2_FRAME_END) serialFrame.commit();
+        else serialFrame.clear();
+        state = getSerialHeaderState(next);
         break;
     }
 
@@ -221,6 +327,8 @@ void handleSerial()
 
     Serial.read(); //discard the byte
   }
+
+  serialFrame.refreshTimeout();
 
   // If Continuous Serial Streaming is enabled, send new LED data as bytes
   if (continuousSendLED && (lastUpdate != strip.getLastShow())){

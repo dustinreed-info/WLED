@@ -41,9 +41,9 @@ it('realtime DDP and serial Ambilight packet regressions', t => {
   const fx = read('FX_fcn.cpp'), fxHeader = read('FX.h');
   const stripHeader = fxHeader.slice(fxHeader.indexOf('class WS2812FX {'));
   assert.ok(stripHeader.startsWith('class WS2812FX {'));
-  const constants = read('const.h'), e131 = read('src/dependencies/e131/ESPAsyncE131.h');
-  const defines = [constants, e131].flatMap(source => source.split('\n').filter(line =>
-    /^#define (?:DDP_\w+|REALTIME_MODE_\w+|REALTIME_OVERRIDE_\w+|CALL_MODE_\w+)\s/.test(line)
+  const constants = read('const.h'), e131 = read('src/dependencies/e131/ESPAsyncE131.h'), functions = read('fcn_declare.h');
+  const defines = [constants, e131, functions].flatMap(source => source.split('\n').filter(line =>
+    /^#define (?:DDP_\w+|REALTIME_MODE_\w+|REALTIME_OVERRIDE_\w+|CALL_MODE_\w+|BFRALLOC_\w+|ERR_NORAM_PX)\s/.test(line)
   )).join('\n');
   let source = fs.readFileSync(path.join(__dirname, '../test/realtime/fixture.h'), 'utf8');
   source = source.replace('/* CONSTANTS */', defines);
@@ -67,7 +67,10 @@ it('realtime DDP and serial Ambilight packet regressions', t => {
   if (udp.includes('uint32_t getRealtimePixel(')) source += extract(udp, 'uint32_t getRealtimePixel(') + '\n';
   source += extract(ddp, 'static void handleDDPPacket(e131_packet_t* p, size_t packetLen) {') + '\n';
   source += extract(serial, 'enum class AdaState') + ';\n';
+  const tpmFooter = serial.split('\n').find(line => line.startsWith('static constexpr byte TPM2_FRAME_END ='));
+  if (tpmFooter) source += tpmFooter + '\n';
   if (serial.includes('static AdaState getSerialHeaderState(')) source += extract(serial, 'static AdaState getSerialHeaderState(') + '\n';
+  if (serial.includes('class SerialFrameBuffer {')) source += extract(serial, 'class SerialFrameBuffer {') + ';\nstatic SerialFrameBuffer serialFrame;\n';
   source += 'static bool continuousSendLED=false; static uint32_t lastUpdate=0;\n';
   source += extract(serial, 'void handleSerial(') + '\n';
   source += fs.readFileSync(path.join(__dirname, '../test/realtime/cases.cpp'), 'utf8');
