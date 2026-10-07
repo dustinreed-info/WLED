@@ -3,6 +3,7 @@
 // forward declarations
 static void sendBytes();
 static constexpr byte TPM2_FRAME_END = 0x36;
+static constexpr uint16_t TPM2_MAX_LEDS = UINT16_MAX / 3;
 
 /*
  * Adalight and TPM2 handler
@@ -154,7 +155,8 @@ static inline void sendJSON(){
 static void sendBytes(){
   if (serialCanTX) {
     Serial.write(0xC9); Serial.write(0xDA);
-    unsigned used = strip.getLengthTotal();
+    // A TPM2 packet has a 16-bit byte length. JSON queries can return the full canvas.
+    unsigned used = std::min<unsigned>(strip.getLengthTotal(), TPM2_MAX_LEDS);
     unsigned len = used*3;
     Serial.write(highByte(len));
     Serial.write(lowByte(len));
@@ -207,7 +209,7 @@ void handleSerial()
         if      (next == 'A')  { state = AdaState::Header_d; }
         else if (next == 0xC9) { state = AdaState::TPM2_Header_Type; } //TPM2 start byte
         else if (next == 'I')  { handleImprovPacket(); return; }
-        else if (next == 'v')  { Serial.print("WLED"); Serial.write(' '); Serial.println(VERSION); }
+        else if (next == 'v')  { if (serialCanTX) { Serial.print("WLED"); Serial.write(' '); Serial.println(VERSION); } }
         else if (next == 0xB0) { updateBaudRate( 115200); }
         else if (next == 0xB1) { updateBaudRate( 230400); }
         else if (next == 0xB2) { updateBaudRate( 460800); }
@@ -223,7 +225,7 @@ void handleSerial()
         else if (next == '{')  { //JSON API
           bool verboseResponse = false;
           if (!requestJSONBufferLock(JSON_LOCK_SERIAL)) {
-            Serial.printf_P(PSTR("{\"error\":%d}\n"), ERR_NOBUF);
+            if (serialCanTX) Serial.printf_P(PSTR("{\"error\":%d}\n"), ERR_NOBUF);
             return;
           }
           Serial.setTimeout(100);
@@ -275,7 +277,7 @@ void handleSerial()
       case AdaState::TPM2_Header_Type:
         state = getSerialHeaderState(next); // recover a fresh prefix after an unsupported type
         if (next == 0xDA) state = AdaState::TPM2_Header_CountHi; //TPM2 data
-        else if (next == 0xAA) Serial.write(0xAC); //TPM2 ping
+        else if (next == 0xAA && serialCanTX) Serial.write(0xAC); // TPM2 ping
         break;
       case AdaState::TPM2_Header_CountHi:
         pixel = 0;
