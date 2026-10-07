@@ -20,6 +20,10 @@ using byte=uint8_t;
 #define JSON_LOCK_SERIAL 1
 #define ERR_NOBUF 3
 #define RGBW32(r,g,b,w) ((uint32_t(w)<<24)|(uint32_t(r)<<16)|(uint32_t(g)<<8)|uint32_t(b))
+inline uint8_t R(uint32_t c) { return c >> 16; }
+inline uint8_t G(uint32_t c) { return c >> 8; }
+inline uint8_t B(uint32_t c) { return c; }
+inline uint8_t W(uint32_t c) { return c >> 24; }
 /* CONSTANTS */
 uint32_t fakeTime=100;
 uint32_t millis() { return fakeTime; }
@@ -37,14 +41,18 @@ struct Segment {
   bool freeze=false;
   std::vector<uint32_t> colors=std::vector<uint32_t>(8,0);
   unsigned length() const { return count; }
+  bool isActive() const { return count>0; }
   void clear() { std::fill(colors.begin(),colors.end(),0); }
+  uint32_t getPixelColorRaw(unsigned n) const { return n<colors.size() ? colors[n] : 0; }
 };
-struct Strip {
+struct WS2812FX {
   std::vector<uint32_t> colors=std::vector<uint32_t>(8,0), shown=colors;
+  uint32_t* _pixels=colors.data();
   Segment main;
   unsigned shows=0;
   unsigned getLengthTotal() const { return colors.size(); }
   Segment& getMainSegment() { return main; }
+  const Segment& getMainSegment() const { return main; }
   unsigned getSegmentsNum() const { return 1; }
   Segment& getSegment(unsigned) { return main; }
   void fill(uint32_t c) { std::fill(colors.begin(),colors.end(),c); }
@@ -55,7 +63,10 @@ struct Strip {
   }
   void show() { shown=useMainSegmentOnly ? main.colors : colors; shows++; }
   uint32_t getLastShow() const { return shows; }
+  uint32_t getPixelColor(unsigned n) const { return n<colors.size() ? colors[n] : 0; }
+  uint32_t getRealtimePixelColor(unsigned n) const;
 } strip;
+using Strip=WS2812FX;
 
 struct e131_packet_t {
   uint8_t flags=DDP_FLAGS_VER1, sequenceNum=0, dataType=DDP_TYPE_RGB24, destination=DDP_ID_DISPLAY;

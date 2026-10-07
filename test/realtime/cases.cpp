@@ -109,6 +109,74 @@ int main() {
     for (unsigned i=0;i<65536;i++) { bytes.push_back(11); bytes.push_back(22); bytes.push_back(33); }
     feed(bytes); CHECK(strip.shows==1 && strip.shown[0]==RGBW32(11,22,33,0));
   }});
+  cases.push_back({"DDP single white-byte update preserves existing RGB", [] {
+    realtimeMode=REALTIME_MODE_DDP; strip.colors[0]=RGBW32(11,22,33,44);
+    auto p=packet(3,true,{99}); handleDDPPacket(&p,DDP_HEADER_LEN+1);
+    CHECK(strip.colors[0]==RGBW32(11,22,33,99));
+  }});
+  cases.push_back({"DDP split RGBW pixels reconstruct across datagrams", [] {
+    auto first=packet(0,true,{11,22}); first.flags&=~DDP_FLAGS_PUSH;
+    handleDDPPacket(&first,DDP_HEADER_LEN+2);
+    auto second=packet(2,true,{33,44,55,66,77,88}); handleDDPPacket(&second,DDP_HEADER_LEN+6);
+    CHECK(strip.colors[0]==RGBW32(11,22,33,44) && strip.colors[1]==RGBW32(55,66,77,88));
+  }});
+  cases.push_back({"DDP partial RGB update preserves other RGB channels and clears white", [] {
+    realtimeMode=REALTIME_MODE_DDP; strip.colors[0]=RGBW32(11,22,33,44);
+    auto p=packet(1,false,{99}); handleDDPPacket(&p,DDP_HEADER_LEN+1);
+    CHECK(strip.colors[0]==RGBW32(11,99,33,0));
+  }});
+  cases.push_back({"serial partial header recovers after inactivity", [] {
+    feed({'A','d'}); fakeTime+=1001;
+    feed({'A','d','a',0,0,0x55,11,22,33});
+    CHECK(strip.shows==1 && strip.shown[0]==RGBW32(11,22,33,0));
+  }});
+  cases.push_back({"truncated serial frame recovers after inactivity", [] {
+    feed({'A','d','a',0,1,0x54,11,22}); fakeTime+=1001;
+    feed({'A','d','a',0,0,0x55,44,55,66});
+    CHECK(strip.shows==1 && strip.shown[0]==RGBW32(44,55,66,0));
+  }});
+  cases.push_back({"DDP reconstructs RGB and RGBW at every byte split boundary", [] {
+    for (bool white : {false,true}) {
+      unsigned channels=white ? 4 : 3;
+      std::vector<byte> frame;
+      for (unsigned i=0;i<8*channels;i++) frame.push_back(i+1);
+      for (unsigned split=1;split<frame.size();split++) {
+        strip=Strip{}; realtimeMode=0; e131LastSequenceNumber[0]=0;
+        auto a=packet(0,white,std::vector<byte>(frame.begin(),frame.begin()+split)); a.flags&=~DDP_FLAGS_PUSH;
+        auto b=packet(split,white,std::vector<byte>(frame.begin()+split,frame.end()));
+        handleDDPPacket(&a,DDP_HEADER_LEN+split);
+        handleDDPPacket(&b,DDP_HEADER_LEN+frame.size()-split);
+        for (unsigned i=0;i<8;i++) CHECK(strip.colors[i]==RGBW32(frame[i*channels],frame[i*channels+1],frame[i*channels+2],white ? frame[i*channels+3] : 0));
+      }
+    }
+  }});
+  cases.push_back({"partial DDP update uses main-segment and negative-offset coordinates", [] {
+    useMainSegmentOnly=true; arlsOffset=-1; realtimeMode=REALTIME_MODE_DDP;
+    strip.main.colors[0]=RGBW32(11,22,33,44);
+    auto p=packet(7,true,{99}); handleDDPPacket(&p,DDP_HEADER_LEN+1);
+    CHECK(strip.main.colors[0]==RGBW32(11,22,33,99) && strip.colors[0]==0);
+  }});
+  cases.push_back({"DDP partial update at the final LED clips the following pixel", [] {
+    realtimeMode=REALTIME_MODE_DDP; strip.colors[7]=RGBW32(11,22,33,44);
+    auto p=packet(31,true,{99,1,2,3,4}); handleDDPPacket(&p,DDP_HEADER_LEN+5);
+    CHECK(strip.colors[7]==RGBW32(11,22,33,99) && strip.colors[0]==0);
+  }});
+  cases.push_back({"serial frame duration may exceed the inactivity timeout", [] {
+    feed({'A','d','a',0,1,0x54,11,22});
+    fakeTime+=700; feed({33,44}); CHECK(strip.shows==0);
+    fakeTime+=700; feed({55,66});
+    CHECK(strip.shows==1 && strip.shown[1]==RGBW32(44,55,66,0));
+  }});
+  cases.push_back({"serial inactivity recovery survives millis wrap", [] {
+    fakeTime=UINT32_MAX-500; feed({'A','d'});
+    fakeTime+=1001; feed({'A','d','a',0,0,0x55,44,55,66});
+    CHECK(strip.shows==1 && strip.shown[0]==RGBW32(44,55,66,0));
+  }});
+  cases.push_back({"raw realtime read handles absent storage and inactive main segment", [] {
+    strip._pixels=nullptr; CHECK(getRealtimePixel(0)==0);
+    useMainSegmentOnly=true; strip.main.count=0;
+    CHECK(getRealtimePixel(0)==0 && strip.getRealtimePixelColor(0)==0);
+  }});
   unsigned failures=0;
   for (const auto& entry : cases) {
     reset();

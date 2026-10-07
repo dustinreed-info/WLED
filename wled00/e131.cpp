@@ -21,7 +21,7 @@ static uint16_t pollReplyCount = 0;                                // count numb
  */
 
 //DDP protocol support, called by handleE131Packet
-//handles RGB data only
+//handles RGB and RGBW data, including byte offsets inside a pixel
 static void handleDDPPacket(e131_packet_t* p, size_t packetLen) {
   static bool ddpSeenPush = false;  // have we seen a push yet?
   int lastPushSeq = e131LastSequenceNumber[0];
@@ -59,10 +59,10 @@ static void handleDDPPacket(e131_packet_t* p, size_t packetLen) {
   unsigned ddpChannelsPerLed = 3; // default to RGB
   if ((p->dataType & 0b00111000)>>3 == 0b011) ddpChannelsPerLed = 4; // RGBW data type (see DDP protocol definition)
 
-  uint32_t start =  htonl(p->channelOffset) / ddpChannelsPerLed;
+  uint32_t channelOffset = ntohl(p->channelOffset);
+  uint32_t start = channelOffset / ddpChannelsPerLed;
   start += DMXAddress / ddpChannelsPerLed;
   uint16_t dataLen = htons(p->dataLen);
-  unsigned stop = start + dataLen / ddpChannelsPerLed;
   uint8_t* data = p->data;
   unsigned c = 0;
   if (p->flags & DDP_FLAGS_TIME) c = 4; //packet has timecode flag, we do not support it, but data starts 4 bytes later
@@ -73,19 +73,27 @@ static void handleDDPPacket(e131_packet_t* p, size_t packetLen) {
     return;
   }
 
-  unsigned numLeds = stop - start; // stop >= start is guaranteed
-  unsigned maxDataIndex = numLeds * ddpChannelsPerLed; // validate bounds before accessing data array
-  if (maxDataIndex > dataLen) {
-    DEBUG_PRINTLN(F("DDP packet data bounds exceeded, rejecting."));
-    return;
-  }
-
   if (realtimeMode != REALTIME_MODE_DDP) ddpSeenPush = false; // just starting, no push yet
   realtimeLock(realtimeTimeoutMs, REALTIME_MODE_DDP);
 
   if (!realtimeOverride) {
-    for (unsigned i = start; i < stop; i++, c += ddpChannelsPerLed) {
-      setRealtimePixel(i, data[c], data[c+1], data[c+2], ddpChannelsPerLed >3 ? data[c+3] : 0);
+    unsigned channel = channelOffset % ddpChannelsPerLed;
+    unsigned remaining = dataLen;
+    for (uint32_t i = start; remaining > 0; i++) {
+      if (channel == 0 && remaining >= ddpChannelsPerLed) {
+        // Preserve the complete-pixel fast path used by normal Ambilight senders.
+        setRealtimePixel(i, data[c], data[c+1], data[c+2], ddpChannelsPerLed > 3 ? data[c+3] : 0);
+        c += ddpChannelsPerLed;
+        remaining -= ddpChannelsPerLed;
+      } else {
+        uint32_t previous = getRealtimePixel(i);
+        uint8_t color[4] = {R(previous), G(previous), B(previous), ddpChannelsPerLed > 3 ? W(previous) : uint8_t(0)};
+        unsigned take = std::min(ddpChannelsPerLed - channel, remaining);
+        for (unsigned k = 0; k < take; k++) color[channel+k] = data[c++];
+        setRealtimePixel(i, color[0], color[1], color[2], color[3]);
+        remaining -= take;
+        channel = 0;
+      }
     }
   }
 

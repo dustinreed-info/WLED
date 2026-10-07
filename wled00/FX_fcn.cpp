@@ -1868,6 +1868,15 @@ void WS2812FX::setRealtimePixelColor(unsigned i, uint32_t c) {
   }
 }
 
+// Realtime byte updates read unscaled stream coordinates, without LED remapping.
+uint32_t WS2812FX::getRealtimePixelColor(unsigned i) const {
+  if (useMainSegmentOnly) {
+    const Segment &seg = getMainSegment();
+    return seg.isActive() && i < seg.length() ? seg.getPixelColorRaw(i) : BLACK;
+  }
+  return _pixels && i < getLengthTotal() ? _pixels[i] : BLACK;
+}
+
 // reset all segments
 void WS2812FX::restartRuntime() {
   suspend();

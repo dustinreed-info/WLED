@@ -307,6 +307,7 @@ void realtimeLock(uint32_t timeoutMs, byte md = REALTIME_MODE_GENERIC);
 void exitRealtime();
 void handleNotifications();
 void setRealtimePixel(uint32_t i, byte r, byte g, byte b, byte w);
+uint32_t getRealtimePixel(uint32_t i);
 void refreshNodeList();
 void sendSysInfoUDP();
 #ifndef WLED_DISABLE_ESPNOW

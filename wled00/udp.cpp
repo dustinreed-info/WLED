@@ -663,14 +663,30 @@ void handleNotifications()
 }
 
 
-void setRealtimePixel(uint32_t i, byte r, byte g, byte b, byte w)
+// Map stream coordinates once, retaining their width until after signed clipping.
+static bool mapRealtimePixel(uint32_t i, unsigned &pixel)
 {
   // Keep protocol offsets wide until after clipping. Narrowing a DDP index or
   // adding the signed realtime offset in unsigned arithmetic can wrap onto LED 0.
   int64_t pix = int64_t(i) + arlsOffset;
   unsigned length = useMainSegmentOnly ? strip.getMainSegment().length() : strip.getLengthTotal();
-  if (pix < 0 || uint64_t(pix) >= length) return;
-  strip.setRealtimePixelColor(unsigned(pix), RGBW32(r,g,b,w));
+  if (pix < 0 || uint64_t(pix) >= length) return false;
+  pixel = unsigned(pix);
+  return true;
+}
+
+void setRealtimePixel(uint32_t i, byte r, byte g, byte b, byte w)
+{
+  unsigned pixel;
+  if (mapRealtimePixel(i, pixel)) strip.setRealtimePixelColor(pixel, RGBW32(r,g,b,w));
+}
+
+// Read the same unscaled buffer the stream writes, for partial-channel updates.
+uint32_t getRealtimePixel(uint32_t i)
+{
+  unsigned pixel;
+  if (!mapRealtimePixel(i, pixel)) return BLACK;
+  return strip.getRealtimePixelColor(pixel);
 }
 
 /*********************************************************************************************\
