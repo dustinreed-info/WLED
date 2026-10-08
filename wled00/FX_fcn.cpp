@@ -1334,11 +1334,7 @@ void WS2812FX::updatePixelBuffer() {
   p_free(_pixelCCT);
   _pixelCCT = nullptr;
   _pixelCCTSize = 0;
-  for (auto &whites : _pixelWhites) {
-    p_free(whites);
-    whites = nullptr;
-  }
-  _pixelWhitesSize = 0;
+  freeWhiteBuffers();
   p_free(_pixels); // using realloc on large buffers can cause additional fragmentation instead of reducing it
   // use PSRAM if available: there is no measurable perfomance impact between PSRAM and DRAM on S2/S3 with QSPI PSRAM for this buffer
   _pixels = static_cast<uint32_t*>(allocate_buffer(requiredMem, BFRALLOC_ENFORCE_PSRAM | BFRALLOC_NOBYTEACCESS | BFRALLOC_CLEAR));
@@ -1401,13 +1397,7 @@ bool WS2812FX::updateWhiteBuffers() {
     }
   }
   bool needed = false;
-  if (length != _pixelWhitesSize) {
-    for (auto &whites : _pixelWhites) {
-      p_free(whites);
-      whites = nullptr;
-    }
-    _pixelWhitesSize = length;
-  }
+  if (length != _pixelWhitesSize) freeWhiteBuffers();
   for (size_t mode = 0; mode < WHITE_PROFILE_COUNT; mode++) {
     if (!profiles[mode]) {
       p_free(_pixelWhites[mode]);
@@ -1418,6 +1408,8 @@ bool WS2812FX::updateWhiteBuffers() {
     if (!_pixelWhites[mode]) {
       _pixelWhites[mode] = static_cast<uint32_t*>(allocate_buffer(length * sizeof(uint32_t), BFRALLOC_ENFORCE_PSRAM | BFRALLOC_NOBYTEACCESS));
       if (!_pixelWhites[mode]) {
+        // Fall back to per-pixel segment CCT for all profiles rather than a partial cache.
+        freeWhiteBuffers();
         errorFlag = ERR_NORAM_PX;
         return false;
       }
@@ -1426,6 +1418,15 @@ bool WS2812FX::updateWhiteBuffers() {
   }
   _pixelWhitesSize = needed ? length : 0;
   return true;
+}
+
+// Release all composed white caches; painting then uses the per-pixel segment CCT.
+void WS2812FX::freeWhiteBuffers() {
+  for (auto &whites : _pixelWhites) {
+    p_free(whites);
+    whites = nullptr;
+  }
+  _pixelWhitesSize = 0;
 }
 
 // The carrier tracks pre-gamma white intensity independently of both emitters.
@@ -1943,9 +1944,10 @@ void WS2812FX::show() {
 
   size_t totalLen = getLengthTotal();
   // Keep RGB tint metadata and, when layers overlap, the composed white spectrum.
-  // Keep the last displayed frame on allocation failure rather than repainting
-  // it with a temperature inferred from RGB after losing the segment CCT data.
-  if (!updateCCTBuffer() || !updateWhiteBuffers()) return;
+  // On allocation failure keep rendering (errorFlag is set): skipping show() would freeze
+  // the strip, including when it is turned off. Without CCT data, whites derive from RGB.
+  if (!updateCCTBuffer()) freeWhiteBuffers();
+  else updateWhiteBuffers();
 
   if (realtimeMode == REALTIME_MODE_INACTIVE || useMainSegmentOnly || realtimeOverride > REALTIME_OVERRIDE_NONE) {
     // clear frame buffer
@@ -1964,7 +1966,7 @@ void WS2812FX::show() {
   int oldCCT = Bus::getCCT(); // store original CCT value (since it is global)
   uint16_t oldWhiteBalance = Bus::getWhiteBalance();
   // when cctFromRgb is true we implicitly calculate WW and CW from RGB values (cct==-1)
-  if (cctFromRgb) BusManager::setSegmentCCT(-1);
+  if (cctFromRgb || !_pixelCCT) BusManager::setSegmentCCT(-1);
   // use color gamma correction if enabled, not in realtime mode with gamma disabled or currently overriding RT mode
   bool useGammaCorrection = gammaCorrectCol && !(realtimeMode && arlsDisableGammaCorrection && !realtimeOverride);
 

@@ -317,6 +317,7 @@ public:
   size_t getLengthTotal() const { return length; }
   bool updateCCTBuffer();
   bool updateWhiteBuffers();
+  void freeWhiteBuffers();
   void getLayerWhites(uint32_t, uint8_t, uint32_t*) const;
   void paintPixel(size_t, uint32_t) const;
   void blendPixelCCT(size_t, uint32_t, uint8_t, uint8_t, uint8_t, const uint32_t* = nullptr) const;

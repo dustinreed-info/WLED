@@ -906,7 +906,7 @@ class WS2812FX {
       if (!_pixels || n >= getLengthTotal()) return;
       _pixels[n] = c;
       // Overlays replace the composed pixel; discard its previous white spectrum.
-      for (auto *whites : _pixelWhites) if (whites) whites[n] = UINT32_MAX;
+      if (_pixelWhitesSize) for (auto *whites : _pixelWhites) if (whites) whites[n] = UINT32_MAX;
     } // paints absolute strip pixel with index n and color c
     inline void resetTimebase()                               { timebase = 0UL - millis(); }
     inline void setPixelColor(unsigned n, uint8_t r, uint8_t g, uint8_t b, uint8_t w = 0) const
@@ -1032,6 +1032,7 @@ class WS2812FX {
     size_t    _pixelWhitesSize;
     bool updateCCTBuffer();
     bool updateWhiteBuffers();
+    void freeWhiteBuffers();
     void getLayerWhites(uint32_t color, uint8_t cct, uint32_t *whites) const;
     void paintPixel(size_t pixel, uint32_t color) const;
     void blendPixelCCT(size_t pixel, uint32_t color, uint8_t opacity, uint8_t mode, uint8_t cct, const uint32_t *whites = nullptr) const;
