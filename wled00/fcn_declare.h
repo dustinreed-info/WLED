@@ -201,6 +201,7 @@ void setValuesFromSegment(uint8_t s);
 void toggleOnOff();
 void applyBri();
 void applyFinalBri();
+void restoreTransition();
 void applyValuesToSelectedSegs();
 void colorUpdated(byte callMode);
 void stateUpdated(byte callMode);
