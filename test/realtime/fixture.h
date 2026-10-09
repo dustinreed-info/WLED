@@ -1,4 +1,5 @@
 // Host fixtures for the actual realtime ingress functions, without an ESP SDK.
+#include <cstring>
 #include <algorithm>
 #include <array>
 #include <cstdint>

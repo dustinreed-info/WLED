@@ -105,8 +105,9 @@ int main() {
         BusDigital bus(4,skip,type); bus._reversed=true;
         Bus::_cct=0;
         for (unsigned i=0;i<4;i++) bus.setPixelColor(i,RGBW32(255,0,0,0));
+        for (unsigned i=0;i<skip;i++) bus.raw->pixels[i].R=200; // e.g. a status pixel
         bus.applyBriLimit(128);
-        for (unsigned i=0;i<skip;i++) CHECK(bus.raw->pixels[i].R==0);
+        for (unsigned i=0;i<skip;i++) CHECK(bus.raw->pixels[i].R==200); // skipped pixels are exempt from ABL
         for (unsigned i=skip;i<skip+4;i++) CHECK(bus.raw->pixels[i].R==127);
       }
     }
@@ -419,14 +420,16 @@ int main() {
       }
     }
   }});
-  checks.push_back({"WS2805 white extraction is independent of RGB white balance", [] {
+  checks.push_back({"WS2805 white balance is applied before white extraction", [] {
     for (uint8_t mode : {RGBW_MODE_AUTO_BRIGHTER,RGBW_MODE_AUTO_ACCURATE,RGBW_MODE_DUAL}) {
       BusDigital bus(1); bus._autoWhiteMode=mode;
       for (uint16_t kelvin : {1900,2700,6500,10000}) {
         Bus::_cct=kelvin; bus.setPixelColor(0,RGBW32(100,100,100,0));
+        const uint32_t balanced=colorBalanceFromKelvin(kelvin,RGBW32(100,100,100,0));
+        const int w=std::min({R(balanced),G(balanced),B(balanced)});
         const auto& p=bus.raw->pixels[0];
-        CHECK(p.WW+p.CW>=99 && p.WW+p.CW<=100);
-        if (mode==RGBW_MODE_AUTO_ACCURATE) CHECK(p.R==0 && p.G==0 && p.B==0);
+        CHECK(int(p.WW+p.CW)>=w-1 && int(p.WW+p.CW)<=w);
+        if (mode==RGBW_MODE_AUTO_ACCURATE) CHECK(p.R==R(balanced)-w && p.G==G(balanced)-w && p.B==B(balanced)-w);
       }
     }
   }});
@@ -439,7 +442,6 @@ int main() {
     strip._segments[0].cct=255;
     CHECK(strip.updateCCTBuffer()); strip.blendPixelCCT(0,strip._pixels[0],255,0,255); strip.paintFrame(); auto cool=out->raw->pixels[0];
     CHECK(warm.R!=cool.R || warm.G!=cool.G || warm.B!=cool.B);
-    CHECK(warm.WW==cool.WW && warm.CW==cool.CW);
   }});
   checks.push_back({"RGB-only white balance remains active with the CCT-from-RGB flag", [] {
     auto bus=std::make_unique<BusDigital>(1,0,TYPE_SK6812_RGBW); auto* out=bus.get();
@@ -474,7 +476,7 @@ int main() {
           bool rgbChanged=warm.R!=cool.R || warm.G!=cool.G || warm.B!=cool.B;
           CHECK(rgbChanged==wb);
           if (out->hasCCT()) {
-            if (derive) CHECK(warm.WW==cool.WW && warm.CW==cool.CW);
+            if (derive) CHECK(std::abs(int(warm.WW+warm.CW)-int(cool.WW+cool.CW))<=1); // split follows the balanced RGB, total white is kept
             else CHECK(warm.WW==200 && warm.CW==0 && cool.WW==0 && cool.CW==200);
           } else CHECK(warm.W==200 && cool.W==200);
         }
@@ -563,12 +565,14 @@ int main() {
     const auto& a=ordinary.raw->pixels[0]; const auto& b=native.raw->pixels[0];
     CHECK(!native.supportsNativeCCT() && a.R==b.R && a.G==b.G && a.B==b.B && a.W==b.W);
   }});
-  checks.push_back({"native digital input retains auto-white RGB subtraction and RGB tint", [] {
+  checks.push_back({"native digital input keeps its whites with RGB tint applied before extraction", [] {
     BusDigital bus(1); bus._autoWhiteMode=RGBW_MODE_AUTO_ACCURATE;
     Bus::setCCT(-1); Bus::setWhiteBalance(1900);
     bus.setPixelColorCCT(0,RGBW32(100,60,20,0),uint16_t(70)<<8|30);
+    const uint32_t balanced=colorBalanceFromKelvin(1900,RGBW32(100,60,20,0));
+    const unsigned w=std::min({R(balanced),G(balanced),B(balanced)});
     const auto& p=bus.raw->pixels[0];
-    CHECK(p.R==80 && p.G>0 && p.G<40 && p.B==0 && p.WW==30 && p.CW==70);
+    CHECK(p.R==R(balanced)-w && p.G==G(balanced)-w && p.B==B(balanced)-w && p.WW==30 && p.CW==70);
   }});
   checks.push_back({"native PWM input routes both emitters for RGB+CCT and white-only outputs", [] {
     for (uint8_t type : {TYPE_ANALOG_2CH,TYPE_ANALOG_5CH}) {

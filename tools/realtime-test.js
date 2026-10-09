@@ -57,6 +57,7 @@ it('realtime DDP and serial Ambilight packet regressions', t => {
   source += extract(fx, 'void WS2812FX::setRealtimePixelColor(') + '\n';
   source += extract(fx, 'uint32_t WS2812FX::getRealtimePixelColor(') + '\n';
   source += extract(udp, 'void realtimeLock(') + '\n';
+  if (ddp.includes('void resetE131SequenceNumbers(')) source += extract(ddp, 'void resetE131SequenceNumbers(') + '\n';
   source += extract(udp, 'void exitRealtime(') + '\n';
   const maintenanceStart = udp.indexOf('  if (e131NewData', udp.indexOf('void handleNotifications('));
   const maintenanceEnd = udp.indexOf('  //receive UDP notifications', maintenanceStart);
