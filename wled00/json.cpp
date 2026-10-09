@@ -570,6 +570,7 @@ bool deserializeState(JsonObject root, byte callMode, byte presetId)
 
   if (stateChanged) stateUpdated(callMode);
   if (presetToRestore) currentPreset = presetToRestore;
+  restoreTransition(); // a one-shot transition applied to this request only
 
   return stateResponse;
 }

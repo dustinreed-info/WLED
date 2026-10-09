@@ -78,11 +78,22 @@ void applyFinalBri() {
   strip.trigger(); // force one last update
 }
 
+// duration of the running global brightness transition. Captured when it (re)starts, as the strip transition
+// may change before it ends (a one-shot "tt" is restored once its request has been applied, see restoreTransition())
+static uint16_t briTransitionDur = 0;
+
+// restores the configured transition after a request with a one-shot transition ("tt", "live", "seg":{"i"}, playlist,
+// sync notification) has been applied: the one-shot applies to that request only, not to the next one without "tt"
+void restoreTransition() {
+  if (!jsonTransitionOnce) return;
+  jsonTransitionOnce = false;
+  strip.setTransition(transitionDelay);
+}
+
 // local function to handle global brightness transition, called from stateUpdated(). Note: power flags are set in toggleOnOff()
 void handleBriChange() {
   //DEBUG_PRINTF_P(PSTR("state update: briT: %d bri: %d briOld: %d, isPoweron: %d , isPoweroff %d, trigger: %d\n"), (int)briT, (int)bri, (int)briOld, (int)strip.isPoweringOn(), (int)strip.isPoweringOff(), (int)strip.isPowerTrigger());
   if (strip.getTransition() == 0) {
-    jsonTransitionOnce = false;
     transitionActive = false;
     strip.clearPowerFlag(0xFF); // clear all power flags
     applyFinalBri();
@@ -144,7 +155,8 @@ void handleBriChange() {
       }
     }
 
-    // In all cases that arrive here, there is an active transition now
+    // In all cases that arrive here, there is an active transition now, running with this request's transition
+    briTransitionDur = strip.getTransition();
     transitionActive = true;
   }
 }
@@ -221,16 +233,13 @@ void handleTransitions() {
   updateInterfaces(interfaceUpdateCallMode);
 
   // note: the !stateChanged is a workaround: bri is updated async, this code can run before stateUpdated() is called, causing a jump in the fade
-  if (transitionActive && strip.getTransition() > 0 && !stateChanged) {
+  if (transitionActive && briTransitionDur > 0 && !stateChanged) {
     int progress = millis() - transitionStartTime;
-    int duration = strip.getTransition();
+    int duration = briTransitionDur;
     // finalize once the transition time has elapsed
     if (progress >= duration) {
       strip.clearPowerFlag(0xFF); // if transition ends, reset all global flags
-      // restore (global) transition time if not called from UDP notifier or single/temporary transition from JSON (also playlist)
-      if (jsonTransitionOnce) strip.setTransition(transitionDelay);
       transitionActive = false;
-      jsonTransitionOnce = false;
       applyFinalBri();
       return;
     }

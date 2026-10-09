@@ -402,6 +402,7 @@ static void parseNotifyPacket(const uint8_t *udpIn) {
 
   if (receiveNotificationBrightness || !someSel) bri = udpIn[2];
   stateUpdated(CALL_MODE_NOTIFICATION);
+  restoreTransition(); // the notification's transition applied to it only
 }
 
 // realtimeLock() is called from UDP notifications, JSON API or serial Ada
