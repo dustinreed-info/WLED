@@ -34,6 +34,8 @@ static AdaState getSerialHeaderState(byte next) {
 
 // Cache a candidate RGB frame separately from the live buffers used by rendering.
 // Only its in-bounds, offset-clipped span consumes RAM; all serial bytes are consumed.
+// If that RAM is unavailable, pixels are written directly (legacy behavior, not atomic)
+// so serial streaming keeps working on low-memory devices instead of dropping every frame.
 class SerialFrameBuffer {
   public:
     ~SerialFrameBuffer() { clear(); }
@@ -41,6 +43,7 @@ class SerialFrameBuffer {
     // Capture stream geometry once so configuration changes cannot move a partial frame.
     void begin(uint32_t pixelCount) {
       _valid = false;
+      _direct = false;
       _mainOnly = useMainSegmentOnly;
       _mainSegmentId = strip.getMainSegmentId();
       _offset = arlsOffset;
@@ -61,6 +64,10 @@ class SerialFrameBuffer {
         _pixels = static_cast<uint32_t*>(allocate_buffer(size_t(_span) * sizeof(uint32_t), BFRALLOC_PREFER_PSRAM | BFRALLOC_NOBYTEACCESS));
         if (!_pixels) {
           errorFlag = ERR_NORAM_PX;
+          // The header checksum is valid: take over now, then write pixels as they arrive.
+          _direct = true;
+          _valid = true;
+          realtimeLock(realtimeTimeoutMs, REALTIME_MODE_ADALIGHT);
           return;
         }
         _capacity = _span;
@@ -73,6 +80,10 @@ class SerialFrameBuffer {
       if (!_valid) return;
       int64_t pixel = int64_t(streamPixel) + _offset - _start;
       if (pixel < 0 || uint64_t(pixel) >= _span) return;
+      if (_direct) {
+        if (!realtimeOverride) strip.setRealtimePixelColor(_start + unsigned(pixel), color);
+        return;
+      }
       _pixels[unsigned(pixel)] = realtimeOverride ? SKIPPED_PIXEL : color;
     }
 
@@ -80,6 +91,12 @@ class SerialFrameBuffer {
     void commit() {
       if (!_valid) return;
       _valid = false;
+      if (_direct) {
+        _direct = false;
+        realtimeLock(realtimeTimeoutMs, REALTIME_MODE_ADALIGHT);
+        if (!realtimeOverride) strip.show();
+        return;
+      }
       if (_mainOnly != useMainSegmentOnly || _offset != arlsOffset) return;
       if (_mainOnly && (_mainSegmentId != strip.getMainSegmentId() || _mainSegmentId >= strip.getSegmentsNum())) return;
       if (_mainOnly && !strip.getMainSegment().isActive()) return;
@@ -109,6 +126,7 @@ class SerialFrameBuffer {
       _pixels = nullptr;
       _capacity = 0;
       _valid = false;
+      _direct = false;
     }
 
   private:
@@ -117,7 +135,7 @@ class SerialFrameBuffer {
     unsigned _capacity = 0, _span = 0, _start = 0, _length = 0;
     int _offset = 0;
     byte _mainSegmentId = 0;
-    bool _mainOnly = false, _valid = false;
+    bool _mainOnly = false, _valid = false, _direct = false;
 };
 static SerialFrameBuffer serialFrame;
 

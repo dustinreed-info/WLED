@@ -643,14 +643,32 @@ int main() {
     useMainSegmentOnly=true; CHECK(strip.updateWhiteBuffers() && strip._pixelWhitesSize==8);
     strip._segments.resize(1); CHECK(strip.updateWhiteBuffers() && !strip._pixelWhites[0]);
   }});
-  checks.push_back({"white profile allocation failure rejects and recovers without a paint", [] {
+  checks.push_back({"white profile allocation failure falls back to segment CCT and recovers", [] {
     auto* out=setupWhiteLayers(); renderWhiteLayers();
     auto before=out->raw->pixels[0]; strip.releaseCCT(); CHECK(strip.updateCCTBuffer());
     failCCTAllocation=true;
     CHECK(!strip.updateWhiteBuffers() && errorFlag==ERR_NORAM_PX);
-    CHECK(out->raw->pixels[0].WW==before.WW && out->raw->pixels[0].CW==before.CW);
+    CHECK(strip._pixelWhitesSize==0);
+    for (auto *whites : strip._pixelWhites) CHECK(!whites);
+    // The frame must still be painted, using the top layer's per-pixel CCT.
+    std::fill(strip._pixels,strip._pixels+8,0);
+    for (const auto &seg : strip._segments) strip.blendSegment(seg);
+    for (auto &p : out->raw->pixels) p=FakePixel{};
+    strip.paintFrame();
+    CHECK(out->raw->pixels[0].WW+out->raw->pixels[0].CW>0 && strip._pixelCCT[0]==255);
     failCCTAllocation=false; renderWhiteLayers();
     CHECK(out->raw->pixels[0].WW==before.WW && out->raw->pixels[0].CW==before.CW);
+  }});
+  checks.push_back({"CCT allocation failure still paints with RGB-derived white temperature", [] {
+    auto* out=setupWhiteLayers(); strip.releaseCCT();
+    failCCTAllocation=true;
+    CHECK(!strip.updateCCTBuffer() && !strip._pixelCCT);
+    strip.freeWhiteBuffers(); Bus::_cct=0; // stale global warm CCT must not be used
+    for (auto &p : out->raw->pixels) p=FakePixel{};
+    std::fill(strip._pixels,strip._pixels+8,RGBW32(0,0,255,200)); // blue RGB implies a cold white
+    strip.paintFrame();
+    for (const auto &p : out->raw->pixels) CHECK(p.CW>p.WW);
+    failCCTAllocation=false;
   }});
   checks.push_back({"overlay writes discard a stale composed white spectrum", [] {
     auto* out=setupWhiteLayers(); renderWhiteLayers();
