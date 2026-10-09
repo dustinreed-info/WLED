@@ -286,6 +286,14 @@ public:
     return clipStopX!=clipStartX && (x<clipStartX || x>=clipStopX || y<clipStartY || y>=clipStopY);
   }
   bool isPixelClipped(int x) const { return isPixelXYClipped(x,0); }
+  // Upstream transition API (spatial channel); the fixture models plain fades only.
+  static uint16_t invertProgress(uint16_t prog) { return 0xFFFFU - prog; }
+  uint16_t spatialProgress() const { return progress(); }
+  bool isTransitionReversed() const { return false; }
+  bool isPowerOffTransition() const { return false; }
+  bool isPowerOnTransition() const { return false; }
+  bool isPixelXYClipped(int x, int y, uint8_t) const { return isPixelXYClipped(x,y); }
+  bool isPixelClipped(int x, uint8_t) const { return isPixelXYClipped(x,0); }
   void refreshLightCapabilities() const;
 };
 class WS2812FX {
