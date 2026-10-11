@@ -101,7 +101,14 @@ constexpr size_t  WLED_MAX_USERMOD_PALETTES     = WLED_USERMOD_PALETTE_ID_BASE -
     #define WLED_PLATFORM_ID 3       // used in UI to distinguish ESP type in UI, needs a proper fix!
   #else
     #if defined(CONFIG_IDF_TARGET_ESP32)  // classic esp32
+      #include <esp_idf_version.h>
+      #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+      // NeoPixelBus' IDF 5 RMT method reserves 192 symbols (3 of the 8 memory blocks) per channel,
+      // so only two RMT outputs can be created; further digital outputs use I2S
+      #define WLED_MAX_RMT_CHANNELS 2
+      #else
       #define WLED_MAX_RMT_CHANNELS 8         // ESP32 has 8 RMT output channels
+      #endif
       #define WLED_MAX_I2S_CHANNELS 8         // I2S parallel output supported by NPB
       //#define WLED_MAX_ANALOG_CHANNELS 16
       #define WLED_PLATFORM_ID 4       // used in UI to distinguish ESP type in UI, needs a proper fix!
