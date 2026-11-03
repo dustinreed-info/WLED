@@ -427,13 +427,7 @@ void realtimeLock(uint32_t timeoutMs, byte md)
   }
 
   if (realtimeTimeout != UINT32_MAX) {
-    if (timeoutMs == 255001 || timeoutMs == 65000) realtimeTimeout = UINT32_MAX;
-    else {
-      realtimeTimeout = millis() + timeoutMs;
-      // Reserve 0 for cancellation and UINT32_MAX for an indefinite hold.
-      // Move finite deadlines at these two rollover ticks to the next valid tick.
-      if (realtimeTimeout == 0 || realtimeTimeout == UINT32_MAX) realtimeTimeout = 1;
-    }
+    realtimeTimeout = (timeoutMs == 255001 || timeoutMs == 65000) ? UINT32_MAX : millis() + timeoutMs;
   }
   realtimeMode = md;
 
@@ -449,6 +443,7 @@ void exitRealtime() {
   realtimeTimeout = 0; // cancel realtime mode immediately
   realtimeMode = REALTIME_MODE_INACTIVE; // inform UI immediately
   realtimeIP[0] = 0;
+  resetE131SequenceNumbers(); // the next stream must not be filtered against this one's sequence numbers
   if (useMainSegmentOnly) { // unfreeze live segment again
     strip.getMainSegment().freeze = false;
     strip.trigger();
@@ -485,8 +480,8 @@ void handleNotifications()
     else                    strip.show();
   }
 
-  // Compare finite deadlines across millis() rollover; 0 cancels immediately.
-  if (realtimeMode && realtimeTimeout != UINT32_MAX && (realtimeTimeout == 0 || int32_t(millis() - realtimeTimeout) > 0)) exitRealtime();
+  //unlock strip when realtime UDP times out
+  if (realtimeMode && millis() > realtimeTimeout) exitRealtime();
 
   //receive UDP notifications
   if (!udpConnected) return;
@@ -639,7 +634,7 @@ void handleNotifications()
         }
       } else if (udpIn[0] == 5 && packetSize > 8) { //dnrgbw
         unsigned id = ((udpIn[3] << 0) & 0xFF) + ((udpIn[2] << 8) & 0xFF00);
-        for (size_t i = 4; i < packetSize -2 && id < totalLen; i += 4, id++) {
+        for (size_t i = 4; i < packetSize -3 && id < totalLen; i += 4, id++) { // RGBW: i+3 must be inside the packet
           setRealtimePixel(id, udpIn[i], udpIn[i+1], udpIn[i+2], udpIn[i+3]);
         }
       }

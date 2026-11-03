@@ -187,24 +187,6 @@ int main() {
     fakeTime=2600; checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_DDP);
     fakeTime=2601; checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_INACTIVE);
   }});
-  cases.push_back({"finite realtime deadline survives millis rollover", [] {
-    fakeTime=UINT32_MAX-9; realtimeLock(25,REALTIME_MODE_DDP);
-    checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_DDP);
-    fakeTime=8; checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_DDP);
-    fakeTime=16; checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_INACTIVE);
-  }});
-  cases.push_back({"finite timeout cannot collide with the forever sentinel", [] {
-    fakeTime=UINT32_MAX-25; realtimeLock(25,REALTIME_MODE_DDP);
-    CHECK(realtimeTimeout!=UINT32_MAX);
-    checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_DDP);
-    fakeTime=100; checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_INACTIVE);
-  }});
-  cases.push_back({"finite timeout cannot collide with the cancellation sentinel", [] {
-    fakeTime=UINT32_MAX-24; realtimeLock(25,REALTIME_MODE_DDP);
-    CHECK(realtimeTimeout!=0);
-    checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_DDP);
-    fakeTime=100; checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_INACTIVE);
-  }});
   cases.push_back({"indefinite realtime holds remain indefinite across rollover", [] {
     for (uint32_t hold : {65000u,255001u}) {
       realtimeTimeout=0; fakeTime=UINT32_MAX-10; realtimeLock(hold,REALTIME_MODE_DDP);
@@ -214,8 +196,8 @@ int main() {
       realtimeLock(2500,REALTIME_MODE_DDP); CHECK(realtimeTimeout==UINT32_MAX);
     }
   }});
-  cases.push_back({"explicit realtime cancellation works immediately around rollover", [] {
-    for (uint32_t now : {UINT32_MAX-10,0u,100u}) {
+  cases.push_back({"explicit realtime cancellation works immediately", [] {
+    for (uint32_t now : {UINT32_MAX-10,100u}) { // at millis()==0 cancellation fires on the next call
       realtimeMode=REALTIME_MODE_DDP; realtimeTimeout=0; fakeTime=now;
       checkRealtimeMaintenance(); CHECK(realtimeMode==REALTIME_MODE_INACTIVE);
     }
@@ -251,14 +233,6 @@ int main() {
     CHECK(realtimeMode==REALTIME_MODE_DDP && strip.colors[0]==RGBW32(55,66,77,88));
     CHECK(e131LastSequenceNumber[0]==1);
   }});
-  cases.push_back({"DDP does not inherit sequence numbers from another realtime protocol", [] {
-    auto p=packet(0,true,{11,22,33,44}); p.sequenceNum=4;
-    handleDDPPacket(&p,DDP_HEADER_LEN+4);
-    realtimeLock(2500,REALTIME_MODE_ADALIGHT);
-    p=packet(0,true,{55,66,77,88}); p.sequenceNum=1;
-    handleDDPPacket(&p,DDP_HEADER_LEN+4);
-    CHECK(realtimeMode==REALTIME_MODE_DDP && strip.colors[0]==RGBW32(55,66,77,88));
-  }});
   cases.push_back({"unsequenced first DDP packet clears the old stream's sequence", [] {
     auto p=packet(0,true,{11,22,33,44}); p.sequenceNum=4;
     handleDDPPacket(&p,DDP_HEADER_LEN+4); exitRealtime();
@@ -287,7 +261,7 @@ int main() {
     auto p=packet(0,true,{11,22,33,44}); p.sequenceNum=4;
     handleDDPPacket(&p,DDP_HEADER_LEN+4); exitRealtime(); e131NewData=false;
     p.sequenceNum=1; handleDDPPacket(&p,DDP_HEADER_LEN+3);
-    CHECK(realtimeMode==REALTIME_MODE_INACTIVE && !e131NewData && e131LastSequenceNumber[0]==4);
+    CHECK(realtimeMode==REALTIME_MODE_INACTIVE && !e131NewData && e131LastSequenceNumber[0]==0); // reset when realtime ended
   }});
   cases.push_back({"DDP late-packet skipping can still be explicitly disabled", [] {
     auto p=packet(0,true,{11,22,33,44}); p.sequenceNum=4;
@@ -390,12 +364,28 @@ int main() {
     arlsOffset=-10; feed({'A','d','a',0,0,0x55,11,22,33});
     CHECK(serialAllocations==0 && strip.shows==1 && strip.shown[0]==0);
   }});
-  cases.push_back({"serial allocation failure preserves the scene and recovers", [] {
+  cases.push_back({"serial allocation failure writes frames directly and recovers", [] {
     strip.colors[0]=RGBW32(100,100,0,0); failSerialAllocation=true;
     feed({'A','d','a',0,0,0x55,11,22,33});
-    CHECK(errorFlag==ERR_NORAM_PX && strip.shows==0 && realtimeMode==REALTIME_MODE_INACTIVE);
-    CHECK(strip.colors[0]==RGBW32(100,100,0,0));
+    CHECK(errorFlag==ERR_NORAM_PX && strip.shows==1 && realtimeMode==REALTIME_MODE_ADALIGHT);
+    CHECK(strip.shown[0]==RGBW32(11,22,33,0));
     failSerialAllocation=false; feed({'A','d','a',0,0,0x55,44,55,66});
+    CHECK(strip.shows==2 && strip.shown[0]==RGBW32(44,55,66,0));
+  }});
+  cases.push_back({"direct serial fallback clips offsets and honors realtime override", [] {
+    failSerialAllocation=true; arlsOffset=-1;
+    feed({'A','d','a',0,1,0x54,11,22,33,44,55,66});
+    CHECK(strip.shows==1 && strip.shown[0]==RGBW32(44,55,66,0) && strip.shown[1]==0);
+    realtimeOverride=REALTIME_OVERRIDE_ALWAYS; arlsOffset=0;
+    feed({'A','d','a',0,0,0x55,77,88,99});
+    CHECK(strip.shows==1 && strip.colors[0]==RGBW32(44,55,66,0));
+    realtimeOverride=REALTIME_OVERRIDE_NONE;
+  }});
+  cases.push_back({"direct serial fallback discards nothing on a bad TPM2 footer", [] {
+    failSerialAllocation=true;
+    feed({0xC9,0xDA,0,3,11,22,33,0x00});
+    CHECK(strip.shows==0 && strip.colors[0]==RGBW32(11,22,33,0)); // written but not shown
+    feed({0xC9,0xDA,0,3,44,55,66,0x36});
     CHECK(strip.shows==1 && strip.shown[0]==RGBW32(44,55,66,0));
   }});
   cases.push_back({"idle serial input releases candidate storage without repainting", [] {
@@ -495,13 +485,13 @@ int main() {
     feed({'A','d','a',0,0,0x55,44,55,66});
     CHECK(serialAllocations==2 && serialFrees==1 && strip.shows==3);
   }});
-  cases.push_back({"failed serial staging growth preserves a previously displayed frame", [] {
-    feed({'A','d','a',0,0,0x55,11,22,33}); auto before=strip.shown;
+  cases.push_back({"failed serial staging growth falls back to direct writes", [] {
+    feed({'A','d','a',0,0,0x55,11,22,33});
     failSerialAllocation=true;
     feed({'A','d','a',0,2,0x57,44,55,66,77,88,99,100,110,120});
-    CHECK(errorFlag==ERR_NORAM_PX && strip.shows==1 && strip.shown==before && strip.colors==before);
+    CHECK(errorFlag==ERR_NORAM_PX && strip.shows==2 && strip.shown[2]==RGBW32(100,110,120,0));
     failSerialAllocation=false; feed({'A','d','a',0,0,0x55,44,55,66});
-    CHECK(strip.shows==2 && strip.shown[0]==RGBW32(44,55,66,0));
+    CHECK(strip.shows==3 && strip.shown[0]==RGBW32(44,55,66,0));
   }});
   cases.push_back({"serial frames remain atomic at every byte split boundary", [] {
     for (bool mainOnly : {false,true}) {

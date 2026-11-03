@@ -109,7 +109,7 @@ it('digital pixel readback and automatic brightness limiter regressions', t => {
   source += fx.slice(blendStart, blendEnd) + '\n';
   source += extractFunction(bus, 'void Bus::calculateCCT(uint32_t c, uint8_t &ww, uint8_t &cw, int16_t') + '\n';
   source += extractFunction(bus, 'uint8_t Bus::getWhiteValue(') + '\n';
-  for (const signature of ['bool WS2812FX::updateWhiteBuffers(', 'void WS2812FX::getLayerWhites(', 'void WS2812FX::paintPixel(']) {
+  for (const signature of ['bool WS2812FX::updateWhiteBuffers(', 'void WS2812FX::freeWhiteBuffers(', 'void WS2812FX::getLayerWhites(', 'void WS2812FX::paintPixel(']) {
     source += extractFunction(fx, signature) + '\n';
   }
   for (const signature of ['void Bus::calculateCCT(', 'uint32_t Bus::autoWhiteCalc(',

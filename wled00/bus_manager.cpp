@@ -240,10 +240,10 @@ void BusDigital::applyBriLimit(uint8_t newBri) {
 
   if (newBri < 255) {
     _NPBbri = newBri; // store value so it can be updated in show() (must be updated even if ABL is not used)
-    unsigned hwLen = _len;
-    if (_type == TYPE_WS2812_1CH_X3) hwLen = NUM_ICS_WS2812_1CH_3X(_len); // only needs a third of "RGB" LEDs for NeoPixelBus
-    hwLen += _skip; // NeoPixelBus also contains the sacrificial/status pixels
-    for (unsigned i = 0; i < hwLen; i++) {
+    // NeoPixelBus indices of this bus' LEDs: skipped (sacrificial/status) pixels at the start are exempt from ABL
+    unsigned first = _skip, last = _skip + _len;
+    if (_type == TYPE_WS2812_1CH_X3) { first = IC_INDEX_WS2812_1CH_3X(first); last = IC_INDEX_WS2812_1CH_3X(last - 1) + 1; } // 1 IC controls 3 LEDs
+    for (unsigned i = first; i < last; i++) {
       uint8_t co = _colorOrderMap.getPixelColorOrder(i+_start, _colorOrder); // need to revert color order for correct color scaling and CCT calc in case white is swapped
       uint16_t wwcw = 0;
       uint32_t c = PolyBus::getPixelColor(_busPtr, _iType, i, co, &wwcw);
@@ -293,6 +293,7 @@ void IRAM_ATTR BusDigital::setPixelColorCCT(unsigned pix, uint32_t c, uint16_t w
 // Share brightness, mapping and ABL accounting between legacy and native white input.
 void IRAM_ATTR BusDigital::setPixelColorInternal(unsigned pix, uint32_t c, const uint16_t* nativeWhites) {
   if (!_valid) return;
+  if (Bus::getWhiteBalance() >= 1900) c = colorBalanceFromKelvin(Bus::getWhiteBalance(), c); //color correction from CCT
   uint8_t cctWW = 0, cctCW = 0;
   uint16_t wwcw = 0;
   if (hasWhite()) c = autoWhiteCalc(c, cctWW, cctCW);
@@ -300,8 +301,6 @@ void IRAM_ATTR BusDigital::setPixelColorInternal(unsigned pix, uint32_t c, const
     cctWW = *nativeWhites;
     cctCW = *nativeWhites >> 8;
   }
-  // Balance RGB after white extraction so tinting cannot change white output.
-  if (Bus::getWhiteBalance() >= 1900) c = colorBalanceFromKelvin(Bus::getWhiteBalance(), c); // RGB correction
   c = color_fade(c, _bri, true); // apply brightness
 
   if (hasCCT()) {
@@ -519,15 +518,14 @@ void BusPwm::setPixelColorCCT(unsigned pix, uint32_t c, uint16_t wwcw) {
 // Keep PWM channel routing and RGB correction shared for both white representations.
 void BusPwm::setPixelColorInternal(unsigned pix, uint32_t c, const uint16_t* nativeWhites) {
   if (pix != 0 || !_valid) return; //only react to first pixel
+  if (Bus::getWhiteBalance() >= 1900 && (_type == TYPE_ANALOG_3CH || _type == TYPE_ANALOG_4CH)) {
+    c = colorBalanceFromKelvin(Bus::getWhiteBalance(), c); //color correction from CCT
+  }
   uint8_t cctWW, cctCW;
   if (_type != TYPE_ANALOG_3CH) c = autoWhiteCalc(c, cctWW, cctCW);
   if (nativeWhites && supportsNativeCCT()) {
     cctWW = *nativeWhites;
     cctCW = *nativeWhites >> 8;
-  }
-  // Keep the extracted white level independent of RGB white balance.
-  if (Bus::getWhiteBalance() >= 1900 && (_type == TYPE_ANALOG_3CH || _type == TYPE_ANALOG_4CH)) {
-    c = colorBalanceFromKelvin(Bus::getWhiteBalance(), c); // RGB correction
   }
   uint8_t r = R(c), g = G(c), b = B(c), w = W(c);
   // note: no color scaling, brightness is applied in show()
@@ -786,8 +784,8 @@ BusNetwork::BusNetwork(const BusConfig &bc)
 void BusNetwork::setPixelColor(unsigned pix, uint32_t c) {
   if (!_valid || pix >= _len) return;
   uint8_t ww, cw; // dummy, unused
+  if (Bus::getWhiteBalance() >= 1900) c = colorBalanceFromKelvin(Bus::getWhiteBalance(), c); //color correction from CCT
   if (_hasWhite) c = autoWhiteCalc(c, ww, cw);
-  if (Bus::getWhiteBalance() >= 1900) c = colorBalanceFromKelvin(Bus::getWhiteBalance(), c); // RGB correction
   unsigned offset = pix * _UDPchannels;
   _data[offset]   = R(c);
   _data[offset+1] = G(c);
