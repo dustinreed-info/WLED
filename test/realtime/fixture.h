@@ -32,6 +32,10 @@ void yield() {}
 bool serialCanRX=true, serialCanTX=true, useMainSegmentOnly=false, realtimeRespectLedMaps=true;
 bool e131SkipOutOfSequence=true, arlsForceMaxBri=false, e131NewData=false;
 byte realtimeOverride=0, realtimeMode=0, bri=77, briT=77, briLast=77;
+uint16_t briT16=77<<8; // Q8.8 transition brightness used by realtimeLock()
+bool arlsDisableGammaCorrection=true;
+float gammaCorrectVal=2.2f;
+struct NeoGammaWLEDMethod { static void calcGammaTable(float) {} };
 uint32_t realtimeTimeout=0, realtimeTimeoutMs=2500;
 std::array<byte,4> realtimeIP{};
 void updateInterfaces(byte) {}
