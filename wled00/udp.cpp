@@ -438,7 +438,8 @@ void realtimeLock(uint32_t timeoutMs, byte md)
   }
   realtimeMode = md;
   // switch gamma table to unity when realtime mode disables gamma correction, restore otherwise
-  if (arlsDisableGammaCorrection && md != REALTIME_MODE_INACTIVE)
+  // (a realtime override renders the normal effects with gamma correction, see WS2812FX::show(), so it needs the configured table)
+  if (arlsDisableGammaCorrection && md != REALTIME_MODE_INACTIVE && !realtimeOverride)
     NeoGammaWLEDMethod::calcGammaTable(1.0f);
   else
     NeoGammaWLEDMethod::calcGammaTable(gammaCorrectVal);
